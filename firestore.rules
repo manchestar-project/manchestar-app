@@ -1,0 +1,538 @@
+rules_version = '2';
+
+// ManCHEStar Firestore セキュリティルール
+// 段階3-A：現場（inspections）の書き込みを絞り、総当たりの一覧取り出しを塞ぐ
+// 段階3-B：users は本人だけ、login_logs は書くだけ
+// 段階3-C-A：招待コードの索引（inviteCodes）を保護
+// 段階3-C-B：会社（companies）とメンバー（members）を保護
+// 2026-09-17：配布先の設定（config/system）を追加。1つの Firebase に会社は1社だけ
+// 2026-09-23：写真の使用量の積算（config/usage）と、オーナーによる数え直しを追加
+// 2026-09-23（Session 38）：古いサイン・写真の掃除のため、旗の会社のオーナーに
+//   現場の一覧（会社の一致に依らない）と、サイン・写真・覚え書きの「読む・消す」を許可
+//
+// このルールでやること
+//   ・ログインしていない人は一切触れない
+//   ・現場が閉じているとき、子機は現場のデータを読めない（サーバーが拒む）
+//   ・現場の持ち主（親機）と、その現場に紐付いた会社の管理者は、閉じていても出入りできる
+//   ・現場の「骨組み」（持ち主・所属会社・開いている期限・終了の合図）は、
+//     持ち主と会社の管理者しか書き換えられない
+//   ・現場を丸ごと消せるのも、持ち主と会社の管理者だけ
+//   ・持ち主の書かれていない現場は、そもそも作れない
+//   ・現場の総当たり列挙（一覧でまとめて取る）は禁止（旗の会社のオーナーだけは掃除のために可）
+//   ・自分の記録（users）は本人しか読めない・書けない
+//   ・ログイン履歴（login_logs）は本人名義で1件書けるだけ。読み出し・書き換え・削除は不可
+//   ・招待コードの索引は1件ずつしか読めず、作成・削除はその会社のオーナーだけ
+//   ・会社の中身を書き換えられるのは、その会社のオーナーだけ
+//   ・会社メンバーの一覧を読めるのは、オーナーと承認済みの会社管理者だけ
+//   ・自分のメンバー記録は「申請の形（承認待ち・管理者でない）」でしか書けない
+//   ・除名された人は、自分の除名の印に触れない
+//   ・現場の一覧は、その現場が属する会社の承認済みメンバーしか引けない（旗の会社のオーナーは別）
+//   ・会社登録の旗（config/system）が立ったあとは、2社目の会社を作れない
+//   ・旗と写真モードの設定を書き換えられるのは、旗が指している会社のオーナーだけ
+//   ・旗が立ったあとは、その会社の承認済みメンバーでない人は現場を新しく作れない
+//   ・写真の使用量の積算（config/usage）は、ログインした人なら読める。書けるのは
+//     photoBytes だけで、オーナー以外は1回あたりの増減に上限がある
+//   ・写真の覚え書きを現場をまたいでまとめて引けるのは、オーナーだけ（数え直しのため）
+//
+// 【まだ残っている穴（自覚のうえで見送ったもの）】
+//   ・会社ID を知っている人は会社本体を読めるため、招待コードも見える。
+//     config/system に会社ID が載るため、ログインした人なら誰でも会社ID を知り得る。
+//     ただし申請してもオーナーの承認が要るため、実害は「承認待ちに知らない名前が並ぶ」程度。
+//     塞ぐには会社名を inviteCodes 側へ持たせる改造が要るため、別途とした。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- 共通の判定 ----
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function jobExists(jobId) {
+      return exists(/databases/$(database)/documents/inspections/$(jobId));
+    }
+
+    function jobData(jobId) {
+      return get(/databases/$(database)/documents/inspections/$(jobId)).data;
+    }
+
+    // 現場の持ち主（親機）かどうか
+    function isJobOwner(jobId) {
+      return 'ownerUid' in jobData(jobId)
+        && jobData(jobId).ownerUid == request.auth.uid;
+    }
+
+    // 子機の参加を受け付けている最中かどうか（openUntil を過ぎていないか）。
+    // openUntil は「その日の23:59:59」。日付が変われば自動的に閉じる。
+    // 比較に使う request.time はサーバーの時計なので、端末の時計をずらしても延ばせない。
+    function jobIsOpen(jobId) {
+      return 'openUntil' in jobData(jobId)
+        && jobData(jobId).openUntil != null
+        && jobData(jobId).openUntil > request.time;
+    }
+
+    // この現場に紐付いた会社の「管理者」かどうか
+    function isCompanyAdminOfJob(jobId) {
+      return 'companyId' in jobData(jobId)
+        && jobData(jobId).companyId != null
+        && exists(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid)).data.status == 'approved'
+        && get(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid)).data.isCompanyAdmin == true;
+    }
+
+    // この現場を「管理」してよい人か（持ち主 or 会社の管理者）
+    function canManageJob(jobId) {
+      return isJobOwner(jobId) || isCompanyAdminOfJob(jobId);
+    }
+
+    // その会社の登録者（オーナー）かどうか（段階3-C-A で追加）
+    // 会社そのものが無い場合に get() で落ちないよう、exists() を先に確かめている。
+    function isCompanyOwner(companyId) {
+      return companyId != null
+        && exists(/databases/$(database)/documents/companies/$(companyId))
+        && get(/databases/$(database)/documents/companies/$(companyId)).data.ownerUid == request.auth.uid;
+    }
+
+    // その会社の「承認済みメンバー」かどうか（段階3-C-B で追加）
+    // 記録が無い場合に get() で落ちないよう、exists() を先に確かめている。
+    function isApprovedCompanyMember(companyId) {
+      return companyId != null
+        && exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.status == 'approved';
+    }
+
+    // その会社の「承認済みの会社管理者」かどうか（段階3-C-B で追加）
+    function isApprovedCompanyAdmin(companyId) {
+      return isApprovedCompanyMember(companyId)
+        && get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.isCompanyAdmin == true;
+    }
+
+    // 旗（config/system）が指している会社のオーナー本人かどうか（2026-09-23 追加）。
+    // 写真の使用量の積算を自由に書き換えられるのは、この人だけ（数え直しのため）。
+    // 旗がまだ無い Firebase では、誰もこの立場にならない。
+    function isFlagCompanyOwner() {
+      return exists(/databases/$(database)/documents/config/system)
+        && isCompanyOwner(get(/databases/$(database)/documents/config/system).data.companyId);
+    }
+
+    // この配布先に会社が登録済みで、自分がその会社の承認済みメンバーかどうか（2026-09-17 追加）。
+    // 旗（config/system）がまだ無い Firebase では、会社登録前の立ち上げと既存の運用を
+    // 止めないよう、無条件で通す。旗が立った時点から効き始める。
+    function isMemberOfThisDeployment() {
+      return !exists(/databases/$(database)/documents/config/system)
+        || isApprovedCompanyMember(get(/databases/$(database)/documents/config/system).data.companyId);
+    }
+
+    // 自分のメンバー記録に書いてよい形かどうか（＝ただの参加申請であること）。
+    // 自分で status:'approved' や isCompanyAdmin:true と名乗るのを防ぐ。
+    function isPlainJoinRequest() {
+      return request.resource.data.status == 'pending'
+        && request.resource.data.isCompanyAdmin == false;
+    }
+
+    // この現場を開いてよい人かどうか。
+    // 【注意】判定の順番に意味がある。存在しない現場を先に通しておかないと、
+    // 新しい現場を作る途中で自分で自分を締め出す。
+    //
+    // 【段階3-Aで変更】以前あった「持ち主が記録されていない古い現場は誰でも開ける」という
+    // 暫定の通し穴（isLegacyJob）は廃止した。今後は下の create ルールにより、
+    // 持ち主の書かれていない現場は作れないため、この穴はもう必要ない。
+    function canEnterJob(jobId) {
+      return !jobExists(jobId)
+        || isJobOwner(jobId)
+        || jobIsOpen(jobId)
+        || isCompanyAdminOfJob(jobId);
+    }
+
+    // 現場の「骨組み」。ここを書き換えられるのは持ち主と会社の管理者だけ。
+    //   ownerUid / ownerEmail … 持ち主のすげ替えを防ぐ
+    //   companyId             … 別の会社への付け替えを防ぐ
+    //   openUntil             … 閉じた現場を子機が勝手に開け直すのを防ぐ
+    //   dismissed/dismissedAt … 「本日終了」の合図を子機が消して居座るのを防ぐ
+    // 逆にここに無い項目（data / updatedAt / lastEditedBy など、点検作業の記録）は、
+    // その現場に入れている人なら誰でも書ける＝子機は今までどおり点検を記録できる。
+    //
+    // 【方式について】「書いてよい項目を並べる」のではなく「触ってはいけない項目を並べる」
+    // 方式を採っている。前者だと、アプリに新しい項目を足したときにここへの追記を忘れると、
+    // 現場で子機の保存だけが静かに通らなくなり、気づくのが遅れるため。
+    function jobCoreUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['ownerUid', 'ownerEmail', 'companyId', 'openUntil', 'dismissed', 'dismissedAt']);
+    }
+
+    // ---- 現場 ----
+
+    match /inspections/{jobId} {
+
+      // 1件ずつ取るのは可。
+      allow get: if signedIn() && canEnterJob(jobId);
+
+      // 【段階3-C-Bで締めた】
+      // 現場管理ダッシュボードが inspections を「companyId が一致」かつ
+      // 「workDate が本日」で直接引くため、list を全面禁止にはできない。
+      // 代わりに、返ってくる1件ごとに「その現場が属する会社の承認済みメンバーか」を確かめる。
+      //
+      // 【この形で他社の現場が引けなくなる理由】
+      // list のルールは、返そうとしている1件ずつに対して評価される。1件でも条件を満たさない
+      // ものが混ざると、問い合わせ全体が拒否される。よって他社の companyId を指定しても、
+      // 会社を指定せず全件を取ろうとしても、そこで止まる。
+      //
+      // 【呼び出し回数について】ここで会社メンバーを見に行くが、返る現場はすべて同じ会社の
+      // ものなので、参照先の宛先が同一になり1回分として扱われる。上限には当たらない。
+      //
+      // 【旗の会社のオーナーは、会社の一致に関係なく引ける（2026-09-23 Session 38）】
+      // 古いサイン・写真の掃除（cleanupOneMonth）が、現場を「lastWorkedMonth が等しい」
+      // だけで引くため。1つの Firebase に会社は1社なので、ここの現場はすべてその会社のもの。
+      // 会社の一致で引くと、紐付いていない現場（自動の紐付けが通信断で落ちた現場・
+      // 紐付けを解除した現場）が掃除から漏れ、サインも写真も残り続ける。
+      // オーナーは Firebase を用意した側で、管理画面からなら元々すべてを見て消せる。
+      // アプリの中で同じ範囲を許しても、できることの範囲は変わらない。
+      // 【並びの理由】オーナーの判定を先に置く。この判定は取り出す現場の中身に依らないので、
+      // 会社を指定しない問い合わせでも、ここで通る。
+      allow list: if signedIn()
+        && (isFlagCompanyOwner()
+          || ('companyId' in resource.data
+            && isApprovedCompanyMember(resource.data.companyId)));
+
+      // 新規作成は、自分を持ち主として書き込む場合のみ。
+      // これにより「持ち主の書かれていない現場」がサーバー上に生まれることがなくなる。
+      // 【重要】アプリ側は setJobOwnerIfNew が最初の書き込みになるよう順番を保証している
+      //         （index.html の window._jobOwnerReady を参照）。
+      //
+      // 【会社のメンバーでない人は現場を作れない（2026-09-17 追加）】
+      // 派遣の人が作業を終えたあと、履歴に残ったURLから他社の Firebase で
+      // 知らずに自分の現場を作ってしまうのを止める。
+      // 子機として QR で入るのは「既にある現場」への書き込みなので、ここは通らず今までどおり。
+      allow create: if signedIn()
+        && 'ownerUid' in request.resource.data
+        && request.resource.data.ownerUid == request.auth.uid
+        && isMemberOfThisDeployment();
+
+      // 更新は、その現場に入れる人であること。そのうえで、
+      // 骨組みを触るなら持ち主か会社の管理者であること。
+      allow update: if signedIn()
+        && canEnterJob(jobId)
+        && (canManageJob(jobId) || jobCoreUnchanged());
+
+      // 削除は持ち主と会社の管理者だけ
+      allow delete: if signedIn() && canManageJob(jobId);
+    }
+
+    // サイン画像・写真・メモ・ログ・指示・在席（presence）
+    // ここは子機も正当に書き込む場所なので、段階2から変えていない。
+    // 【写真共有モードについて】写真は inspections/{jobId}/photos に置く設計。
+    // この包括の段で通るため、写真用の行を別に足す必要は無い。
+    // （例外：オーナーの掃除のための「読む・消す」は、すぐ下の段で別に許している）
+    match /inspections/{jobId}/{document=**} {
+      allow read, write: if signedIn() && canEnterJob(jobId);
+    }
+
+    // 古いサイン・写真の掃除のための通り道（2026-09-23 Session 38）。
+    // 旗の会社のオーナーは、紐付いていない他人の現場にも入れないので、上の段では通らない。
+    // 掃除に要る「読む・消す」だけを、この3か所に限って許す（書き込み・作成は許さない）。
+    // 読む：サインと覚え書きの一覧、覚え書きの無い本体の件数と一覧。
+    // ルールは段どうしで「どれか1つが通ればよい」ので、上の段の条件はそのまま効く。
+    match /inspections/{jobId}/signs/{signId} {
+      allow read, delete: if signedIn() && isFlagCompanyOwner();
+    }
+    match /inspections/{jobId}/photos/{photoId} {
+      allow read, delete: if signedIn() && isFlagCompanyOwner();
+    }
+    match /inspections/{jobId}/photoMeta/{photoId} {
+      allow read, delete: if signedIn() && isFlagCompanyOwner();
+    }
+
+    // ---- 自分の記録（段階3-B）----
+
+    // 本人だけが読み書きできる。
+    //
+    // 【前提の確認（セッション27で調査済み）】
+    // アプリ内の users への書き込みは19か所すべて自分（currentUser.uid）に対してのもので、
+    // 他人の users を書き換えている箇所は一つも無い。承認・除名・却下・復帰の各関数は
+    // 「users 側の控えは書かない。相手が次にアプリを開いたとき、自分で直す」設計。
+    // よって本人限定にしても除名フローは通る。
+    //
+    // 【将来の注意】オーナーがメンバーの users を直す機能を足すと、ここで弾かれる。
+    // 段階3-Cでその形が出てきた場合はここへ戻ること。
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // 下の階層（users/{uid}/jobs/… 継続中の物件一覧）も同じ扱い。
+    // 【重要】ルールは上の段から自動で降りてこないため、この段が別に必要。
+    // 消すと継続中の物件が読めなくなる。
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // ---- 会社（段階3-C-B）----
+    //
+    // companies/{会社ID} → { name, ownerUid, inviteCode, createdAt }
+    //
+    // 【1件ずつなら読める・まとめては読めない】
+    // まだメンバーでない申請者も、招待コードから会社名を出すためにここを1件読む
+    // （requestJoinCompany）。よって get は開けておく必要がある。
+    // 一方 list はアプリのどこからも使っていないので禁止する。
+    // 会社IDはFirestoreが振る当てられない文字列なので、総当たりでは辿り着けない。
+    //
+    // 【新規作成は、会社登録の旗がまだ無いときだけ（2026-09-17 追加）】
+    // 1つの Firebase に会社は1社だけ、という前提をサーバー側で守る。
+    // 旗（config/system）が立ったあとは、誰であっても会社を新しく作れない。
+    // 子機の現場への書き込みはこの段を通らないので影響しない。
+    //
+    // 【書き換えはオーナーだけ】
+    // 書き込みは「新規登録・会社名の変更・招待コードの再発行・オーナーの譲渡・
+    // 古いサイン画像の掃除がどこまで済んだかの記録（lastSignCleanupMonth）」の5か所のみで、
+    // すべてオーナーの操作。ownerUid の書き換えを許すのは譲渡のためだが、判定に使う
+    // resource.data は「書き換える前」の中身なので、現オーナーだけが渡せる形になる。
+    //
+    // 【ownerUid を空にできないようにしている理由】
+    // null や欠落を許すと、その会社は二度と誰にも書き換えられない置き石になる。
+    //
+    // 【削除は禁止】会社を消す機能はアプリに存在しない。
+    match /companies/{companyId} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && 'ownerUid' in request.resource.data
+        && request.resource.data.ownerUid == request.auth.uid
+        && !exists(/databases/$(database)/documents/config/system);
+
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && 'ownerUid' in request.resource.data
+        && request.resource.data.ownerUid != null;
+
+      allow delete: if false;
+    }
+
+    // ---- 会社メンバー（段階3-C-B）----
+    //
+    // companies/{会社ID}/members/{uid}
+    //   → { uid, displayName, status, isCompanyAdmin, requestedAt, approvedAt, removedAt }
+    //
+    // 【ここが難所である理由】
+    // 承認・却下・除名・復帰・譲渡・本人の申請・本人の脱退・オーナーの自己修復が、
+    // すべてこの1か所で交差する。通り道を1本塞ぐと、別の操作が黙って通らなくなる。
+    //
+    // 【読み取り】
+    // ・1件ずつ（get）… 本人／オーナー／承認済みの会社管理者
+    //   本人を含めるのは、参加申請の前に「自分は除名されていないか」を確かめるため。
+    // ・一覧（list）… オーナーと承認済みの会社管理者だけ。
+    //   【注意】一覧はオーナー専用ではない。会社モーダルのメンバー欄は isCompanyAdmin で
+    //   開くため、ここをオーナー限定にすると管理者の画面が空になる。
+    //
+    // 【書き込み】
+    // ・オーナーは自由（承認・却下・除名・復帰・管理者の切替・譲渡先を管理者にする）。
+    // ・本人は「参加申請の形」でしか書けない。status:'approved' や isCompanyAdmin:true と
+    //   自分で名乗ることはできない。
+    // ・すでに除名されている人は、自分の記録に一切触れない（印を消して戻れないように）。
+    //   アプリ側でも同じ判断をしているが（resolvePendingMembership）、こちらが本丸。
+    // ・本人が自分の記録を消せるのは、除名されていない場合だけ（脱退・申請の取り消し）。
+    //
+    // 【会社を新規登録した本人について】
+    // registerCompany は会社→旗→索引→メンバーの順で書く。メンバーを書く時点で会社は
+    // 既に存在し、自分がオーナーなので、オーナー側の通り道で通る。順番が逆だったら
+    // 新規登録が全滅する。⚠️ registerCompany の書き込み順を入れ替えてはいけない。
+    match /companies/{companyId}/members/{uid} {
+      allow get: if signedIn() && (
+           request.auth.uid == uid
+        || isCompanyOwner(companyId)
+        || isApprovedCompanyAdmin(companyId)
+      );
+
+      allow list: if signedIn() && (
+           isCompanyOwner(companyId)
+        || isApprovedCompanyAdmin(companyId)
+      );
+
+      allow create: if signedIn() && (
+           isCompanyOwner(companyId)
+        || (request.auth.uid == uid && isPlainJoinRequest())
+      );
+
+      allow update: if signedIn() && (
+           isCompanyOwner(companyId)
+        || (request.auth.uid == uid
+            && resource.data.status != 'removed'
+            && isPlainJoinRequest())
+      );
+
+      allow delete: if signedIn() && (
+           isCompanyOwner(companyId)
+        || (request.auth.uid == uid && resource.data.status != 'removed')
+      );
+    }
+
+    // 【廃止した写し（companies/{会社ID}/genbaIndex）について】
+    // セッション27で写しを廃止し、ダッシュボードは inspections を直接引くようになった。
+    // 以前ここを通していた包括ルール（companies/{document=**}）は削除したため、
+    // 残っている古い写しのデータには誰も触れなくなる。読み書きしている箇所はもう無い。
+    // 【注意】index.html に saveCompanyGenbaSummary / removeCompanyGenbaSummary が
+    // 定義だけ残っている（誰も呼んでいない）。もし呼ぶとここで拒否される。
+    // 呼ばないか、消すこと（要望リスト B-15）。
+
+    // ---- 招待コードの索引（段階3-C-A）----
+    //
+    // inviteCodes/{コード} → { companyId } だけを持つ引き当て表。
+    //
+    // 【1件ずつなら読める・まとめては読めない】
+    // 参加申請でコードを打つと、そのコードを名指しで1件だけ引く（getDoc）。
+    // この形だと get だけで足りるため、list（一覧取得）を与えていない。
+    // これにより「ログインした人が全社の招待コードを一度に抜く」ことができなくなる。
+    // 段階3-A で inspections に対して行ったのと同じ考え方。
+    //
+    // 【作成・削除はその会社のオーナーだけ】
+    // 索引が書かれるのは、会社の新規登録時・オーナーが会社モーダルを開いた時の救済
+    // （ensureInviteCodeIndex）・再発行時（regenerateInviteCode）の3か所で、いずれも
+    // オーナーの操作。削除は再発行時に古いコードを消す1か所のみ。
+    //
+    // 【書き換えは両側でオーナーであること】
+    // 片側だけの確認にすると、他人の会社のコードを自分の会社へ付け替えられてしまうため、
+    // 変更前の行き先（resource）と変更後の行き先（request.resource）の両方で確かめる。
+    match /inviteCodes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && 'companyId' in request.resource.data
+        && isCompanyOwner(request.resource.data.companyId);
+
+      allow update: if signedIn()
+        && 'companyId' in request.resource.data
+        && isCompanyOwner(resource.data.companyId)
+        && isCompanyOwner(request.resource.data.companyId);
+
+      allow delete: if signedIn()
+        && isCompanyOwner(resource.data.companyId);
+    }
+
+    // ---- この配布先の設定（2026-09-17 追加）----
+    //
+    // config/system → { companyId, companyName, photoMode, billingEnabled }
+    //
+    // 1つの Firebase に会社は1社だけ。その「登録済み」の旗と、配布先ごとの設定を置く。
+    // 配布先ごとの設定と会社ごとの設定は同じもの（会社が1社なので）。
+    //
+    // 【読み取り】ログインしていれば1件読める。
+    // 未メンバー向けの案内画面が「もう会社が登録されているか」を見るため。
+    //
+    // 【作成】旗が指している会社のオーナー本人だけ。
+    // registerCompany は companies を書いた直後にここを書くので、その時点で
+    // 自分がオーナーになっており通る。
+    // ⚠️ companies より先にここを書く順番にすると、登録が全滅する。
+    //
+    // 【2人がほぼ同時に登録した場合】
+    // 先の人が旗を作ると、後の人の書き込みは「作成」ではなく「更新」扱いになり、
+    // 更新は旗が指している会社のオーナーしか通らないため弾かれる。
+    // 後の人は members・users まで進まず、中身の無い会社ドキュメントが1つ残るだけ。
+    //
+    // 【既に会社がある Firebase】旗はまだ無い。オーナーが会社の画面を開いたときに
+    // アプリが旗を置く（ensureInviteCodeIndex と同じ救済のやり方）。
+    //
+    // 【更新】旗が指している会社のオーナーだけ。companyId の付け替えは不可。
+    // オーナーを譲渡した場合は companies 側の ownerUid が変わるので、新オーナーが通る。
+    // 会社名の変更の反映・写真モードの ON/OFF・billingEnabled もここで書く。
+    //
+    // 【削除】不可。消すと2社目が登録できてしまう。
+    // 旗を消す必要が出たときは、Firebase コンソールから消す（ルールはコンソールに効かない）。
+    match /config/system {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && 'companyId' in request.resource.data
+        && isCompanyOwner(request.resource.data.companyId);
+
+      allow update: if signedIn()
+        && isCompanyOwner(resource.data.companyId)
+        && request.resource.data.companyId == resource.data.companyId;
+
+      allow delete: if false;
+    }
+
+    // ---- 写真の使用量の積算（2026-09-23 追加）----
+    //
+    // config/usage → { photoBytes, updatedAt }
+    //
+    // 【旗と分けている理由】旗（config/system）はオーナーしか書けない。写真を撮るのは子機で、
+    // 子機には会社のメンバーでない人（QRで入った応援の人）も含まれる。旗に積算を置くと、
+    // その人たちの写真の保存だけが静かに失敗する。
+    //
+    // 【読み取り】ログインしていれば1件読める。不良モーダルを開いたときに
+    // 「9割を超えていないか」を見るため。
+    //
+    // 【書き込み】触れるのは photoBytes と updatedAt だけ。
+    // オーナー（旗が指している会社の）は好きな値を書ける（数え直しで丸ごと置き換えるため）。
+    // それ以外の人は、1回の増減が 2,000,000 以内でなければ通らない。写真1枚は最大でも
+    // 1MB 程度なので実用には足り、数字を大きく動かす悪さは1回では効かない。
+    //
+    // 【マイナスを許さない理由】引きすぎて負の数になると、実際より少なく見える。
+    // 少なく見えると上限に気づけないまま書き込みが失敗する状態に入るので、
+    // ずれるなら多い側に倒す。弾かれた引き算は、次の数え直しで帳消しになる。
+    //
+    // 【削除】不可。消えると積算が 0 から始まり、実際より少なく見える。
+    match /config/usage {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['photoBytes', 'updatedAt'])
+        && request.resource.data.photoBytes is number
+        && request.resource.data.photoBytes >= 0;
+
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoBytes', 'updatedAt'])
+        && request.resource.data.photoBytes is number
+        && request.resource.data.photoBytes >= 0
+        && (
+          isFlagCompanyOwner()
+          || (
+            request.resource.data.photoBytes - resource.data.photoBytes <= 2000000
+            && resource.data.photoBytes - request.resource.data.photoBytes <= 2000000
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // ---- 写真の覚え書きの数え直し（2026-09-23 追加）----
+    //
+    // オーナーが会社の画面を開いたときに、全現場の photoMeta.bytes を合計して
+    // 積算を置き換える。合計はサーバー側の集計（sum）で取るので、覚え書きそのものは
+    // 端末に流れない。
+    //
+    // 【現場ごとに回さない理由】会社に紐付いていない現場（作成者がまだ承認待ちのときに
+    // 作られた現場など）の写真も、この Firebase の容量を使っている。現場の一覧は
+    // 会社の一致でしか引けないため、現場ごとに回すとその分を数え落とし、
+    // 実際より少なく見える。
+    //
+    // 【ここで許すのは list だけ】1件ずつ読む必要は無い。写真の中身（photos）にも
+    // 覚え書きの中身にも、この段では触れない。
+    match /{path=**}/photoMeta/{photoId} {
+      allow list: if signedIn() && isFlagCompanyOwner();
+    }
+
+    // ---- ログイン履歴（段階3-B）----
+
+    // 本人名義の記録を1件作れるだけ。あとから読むことも書き換えることも消すこともできない。
+    //
+    // ・読み出し禁止：アプリ内で読んでいる箇所はゼロ（セッション27で確認）。
+    //   履歴を見るのはFirebaseコンソールから。ルールはコンソールには効かないため、
+    //   read: false にしても閲覧はできる。
+    // ・uid 必須：これが無いと他人のメールアドレスを書いた偽の記録を作れてしまう。
+    //   index.html 側で uid を書いている（login_logs への addDoc の箇所）。
+    //
+    // 【古い版の端末について】uid を書かない旧版はここで弾かれるが、
+    // アプリ側は記録の失敗を拾う形になっているのでログイン自体は通る。
+    match /login_logs/{docId} {
+      allow read: if false;
+      allow create: if signedIn()
+        && 'uid' in request.resource.data
+        && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
