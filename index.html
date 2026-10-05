@@ -596,7 +596,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-09-28-a';
+    const APP_BUILD = '2026-10-05-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -1241,7 +1241,9 @@
       // セキュリティルールが「持ち主の書かれていない現場は作れない」と定めているため、
       // 先に会社の所属を調べてから書くと、その数往復のあいだに点検データの保存が先着し、
       // それがサーバーに弾かれて現場そのものが出来上がらない。
-      // まず持ち主だけを書き、会社への紐付けは後から足す。
+      // 【2026-10-05】以前はこのあと会社（companyId）を2回目の書き込みで足していたが、やめた。
+      // 1つの Firebase に会社は1社なので、現場はすべてその会社のもの。会社を書いておく必要が無い。
+      // 2回目だけが通信断で抜けると、会社の管理者が入れない現場ができる原因になっていた。
       const ownerWrite = setDoc(ref, {
         ownerUid: window.currentUser.uid,
         ownerEmail: window.currentUser.email || '',
@@ -1253,26 +1255,11 @@
         dlog('現場オーナー設定エラー / ' + e.message);
       });
 
-      // 点検データの保存はここまで待てばよい（会社の紐付けまでは待たせない）。
+      // 点検データの保存はここまで待てばよい。
       // 上で .catch まで付けているのでこのPromiseは必ず成功side で終わる＝保存が永久に止まることはない。
       window._jobOwnerReady = ownerWrite;
 
-      // 作成者が会社に承認済みで所属していれば、新しい現場を自動でその会社に紐付ける
-      // （あとから会社モーダルの操作で手動での紐付け・解除も可能）
-      return ownerWrite.then(() => {
-        if (!window.loadMyCompanyStatus) return null;
-        return window.loadMyCompanyStatus()
-          .then((s) => (s && s.status === 'approved') ? s.companyId : null)
-          .catch(() => null);
-      }).then((companyId) => {
-        if (!companyId) return;
-        window.currentJobCompanyId = companyId;
-        // 【写しの廃止】ここで会社の一覧に空の写しを書いていたが不要になった。
-        // 物件情報を保存した時点で本体に propName / workDate が載り、ダッシュボードに出る。
-        return setDoc(ref, { companyId: companyId }, { merge: true })
-          .then(() => { dlog('現場の会社紐付けOK / job=' + jobId); })
-          .catch((e) => { dlog('現場の会社紐付けエラー / ' + e.message); });
-      });
+      return ownerWrite;
     };
 
     // ---- 現場の開閉（子機の参加受付） ----
@@ -1311,8 +1298,6 @@
       if (!window.currentUser || !window.currentJobId) return Promise.resolve(true);
       const ref = doc(db, 'inspections', window.currentJobId);
       return getDoc(ref).then((snap) => {
-        // この現場がどの会社に紐付いているかを、あとで registerPresence 等が使えるように保持しておく
-        window.currentJobCompanyId = (snap.exists() && snap.data() && snap.data().companyId) || null;
         // 開閉状態を読み取る。中身を読めた時だけ jobMetaLoaded を立てる。
         // 通信エラーで読めなかった場合に「閉じている」と誤判定して締め出さないため。
         // 【重要】現場のドキュメントがまだ無い場合も「閉じている」と判定してはいけない。
@@ -1336,7 +1321,6 @@
         const denied = !!(e && (e.code === 'permission-denied' || /permission|insufficient/i.test(e.message || '')));
         dlog('[診断] オーナー判定: ' + (denied ? 'サーバーに拒まれた' : 'エラーのためfalseに倒した') + ' / ' + e.message);
         window.isJobOwner = false;
-        window.currentJobCompanyId = null;
         if (denied) {
           window.jobMetaLoaded = true;
           window.jobOpenUntil = 0;
@@ -1348,11 +1332,13 @@
     };
 
     // 今ログインしている人が「会社の管理者」として、この現場に無招待で入る資格があるかを確認する。
-    // 条件：会社に承認済みで所属している ＋ その会社IDが、この現場に紐付いている会社IDと一致する ＋ 会社の管理者フラグを持つ
+    // 条件：会社に承認済みで所属している ＋ 会社の管理者（またはオーナー）である
+    // 【2026-10-05】以前は「この現場に書かれた会社と一致すること」も条件にしていたが、外した。
+    // 1つの Firebase に会社は1社なので、ここの現場はすべてその会社のもの。ルール側も同じ判定に揃えてある。
     window.checkCompanyAdminAccess = function() {
-      if (!window.currentJobCompanyId || !window.loadMyCompanyStatus) return Promise.resolve(false);
+      if (!window.loadMyCompanyStatus) return Promise.resolve(false);
       return window.loadMyCompanyStatus().then((status) => {
-        return !!(status && status.status === 'approved' && status.isCompanyAdmin && status.companyId === window.currentJobCompanyId);
+        return !!(status && status.status === 'approved' && (status.isCompanyAdmin || status.isOwner));
       }).catch(() => false);
     };
 
@@ -1525,7 +1511,7 @@
               });
             } else if (!isCompanyAdminHere && existing.role === 'admin' && existing.grantedViaCompany === true) {
               // 会社経由で得ていた【管理者】権限だが、今はもう対象外（会社から抜けた・除名された・
-              // 現場の会社紐付けが解除された等）→ 一般へ格下げする
+              // 会社の管理者を外された等）→ 一般へ格下げする
               setDoc(ref, {
                 role: 'worker',
                 grantedViaCompany: false,
@@ -1828,15 +1814,18 @@
     // 複数日の現場が一覧に一度も出ていなかった。事務所が知りたいのは予定ではなく
     // 「今どこが動いているか」なので、実際に記録が動いた日（lastWorkedDate）で引く。
     //
-    // 【索引について】等しい条件2つだけなので、Firestore は既存の索引の組み合わせで
-    // 処理できる。複合索引は要らず、各社のセットアップ手順も増えない。
+    // 【会社では絞らない（2026-10-05）】1つの Firebase に会社は1社なので、ここの現場は
+    // すべてその会社のもの。以前は companyId でも絞っていたため、会社の書き足しが抜けた現場が
+    // 一覧に出てこなかった。ルール側も「旗の会社のメンバーなら一覧を引ける」に揃えてある。
+    //
+    // 【索引について】等しい条件1つだけなので、自動で作られる索引で足りる。
+    // 複合索引は要らず、各社のセットアップ手順も増えない。
     // 念のため索引を要求された場合の案内（showOfficeDashboardIndexHelp）は残してある。
     window.loadCompanyActiveJobs = function(companyId) {
       if (!companyId) return Promise.resolve({ jobs: [] });
       const today = window.todayISO();
       const q = query(
         collection(db, 'inspections'),
-        where('companyId', '==', companyId),
         where('lastWorkedDate', '==', today)
       );
       return getDocs(q).then((snap) => {
@@ -1927,9 +1916,8 @@
     //
     // 【会社の一致では引かない（2026-09-23 Session 38）】
     // 1つの Firebase に会社は1社だけなので、ここにある現場はすべてこの会社のもの。
-    // 「会社が一致」で引くと、紐付いていない現場（自動の紐付けが通信断で落ちた現場、
-    // 紐付けを解除した現場）が掃除の目に入らず、サインも写真も残り続ける。
-    // 月だけで引けば紐付けに関係なく拾える。等しい条件1つなので索引も要らない。
+    // 月だけで引く。等しい条件1つなので索引も要らない。
+    // （2026-10-05 に現場と会社の紐付けをやめたので、会社で絞る理由はもう無い）
     // ルール側で、旗が指す会社のオーナーにだけ、この引き方と削除を許している。
     //
     // 【写真の消し方】覚え書き → 本体 の順に1枚ずつ（ふだんの削除と同じ向き）。
@@ -2755,7 +2743,7 @@
     };
 
     // 数え直し。覚え書き（photoMeta）の bytes をサーバー側で合計し、積算をその値に置き換える。
-    // 現場をまたぐので、会社に紐付いていない現場の写真も拾える（容量はこの Firebase 全体で効くため）。
+    // 現場をまたいでまとめて数える（容量はこの Firebase 全体で効くため）。
     // 呼べるのはオーナーだけ（ルールでも弾かれる）。
     //
     // 【索引について】この合計には Firebase ごとに索引（photoMeta の bytes）が1つ要る。
@@ -3061,47 +3049,6 @@
         }
         return updateDoc(doc(db, 'companies', companyId, 'members', newOwnerUid), { isCompanyAdmin: true })
           .then(() => updateDoc(doc(db, 'companies', companyId), { ownerUid: newOwnerUid }));
-      });
-    };
-
-    // 現在開いている現場を、指定した会社に紐付ける（会社の管理者がこの現場に無招待で入れるようになる）
-    // 【2026-09-23 修正】現場がどの会社に紐付いているかを読む。
-    // これまで会社モーダル側（別の script ブロック）から getDoc/doc/db を直に呼んでいたが、
-    // それらは module のスコープにしか無く、外からは参照できない。
-    // そのため「今開いている現場の会社紐付け」の欄が「確認中…」のまま止まっていた。
-    window.getJobCompanyId = function(jobId) {
-      if (!jobId) return Promise.resolve(null);
-      return getDoc(doc(db, 'inspections', jobId)).then((snap) => {
-        return (snap.exists() && snap.data() && snap.data().companyId) || null;
-      });
-    };
-
-    window.linkJobToCompany = function(jobId, companyId) {
-      if (!jobId || !companyId) return Promise.reject(new Error('現場または会社が指定されていません'));
-      return updateDoc(doc(db, 'inspections', jobId), { companyId: companyId }).then(() => {
-        window.currentJobCompanyId = companyId;
-        // 【写しの廃止】紐付けた時点の物件名・作業日を本体に載せておく。
-        // これが無いと、紐付けてもダッシュボードに出てこない。
-        if (window.saveJobIndexFields) {
-          const nameEl = document.getElementById('propName');
-          const dateEl = document.getElementById('propDate');
-          return window.saveJobIndexFields(
-            jobId,
-            nameEl && nameEl.value ? nameEl.value : '（物件名未設定）',
-            dateEl ? dateEl.value : ''
-          );
-        }
-      });
-    };
-
-    // 現在開いている現場の、会社への紐付けを解除する
-    window.unlinkJobFromCompany = function(jobId) {
-      if (!jobId) return Promise.reject(new Error('現場が指定されていません'));
-      return updateDoc(doc(db, 'inspections', jobId), { companyId: null }).then(() => {
-        window.currentJobCompanyId = null;
-        // 【写しの廃止】写しを消す処理は不要になった。
-        // ダッシュボードは companyId で絞って本体を引くため、
-        // companyId を null にした時点で一覧から外れる。
       });
     };
 
@@ -8852,7 +8799,6 @@
       }
       // 【写しの廃止】以前はここで会社の一覧（genbaIndex）に写しを書いていたが、
       // 本体とズレる原因だったためやめた。ダッシュボードは現場本体を直接引く。
-      // 会社に紐付いていない現場でも本体には書いておく（あとで紐付けられた時に効くように）。
       if (window.saveJobIndexFields && window.currentJobId) {
         const dateISO = document.getElementById('propDate').value || '';
         window.saveJobIndexFields(window.currentJobId, prop.name, dateISO);
@@ -9758,7 +9704,7 @@
             'padding:6px;margin-bottom:8px;">' + safeUrl.replace(/</g, '&lt;') + '</textarea>' +
             '<button onclick="copyOfficeIndexUrl()" style="padding:8px 14px;font-size:14px;">URLをコピー</button>'
           : '<p style="margin:0;font-size:13px;">Firebaseコンソールの Firestore →インデックス で、' +
-            'inspections に companyId と workDate の複合インデックスを作成してください。</p>') +
+            '案内に出てくるインデックスを作成してください。</p>') +
         '<p style="margin:10px 0 0;font-size:12px;color:#666;">作成後、数分待ってからこの画面をもう一度開いてください。</p>' +
         '</div>';
     }
@@ -10365,13 +10311,7 @@
         '</div>';
       }
 
-      const canManageJobLink = !!(window.currentJobId && (window.myRole === 'admin' || window.isJobOwner));
-      if (canManageJobLink) {
-        html += '<div id="jobCompanyLinkSection" style="margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:8px;">' +
-          '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">今開いている現場の会社紐付け</div>' +
-          '<div id="jobCompanyLinkStatus" style="font-size:12px;color:#666;">確認中…</div>' +
-        '</div>';
-      }
+      // 【2026-10-05】「今開いている現場の会社紐付け」の欄はなくした（現場と会社の紐付けをやめたため）。
 
       if (status.isCompanyAdmin) {
         html += '<button onclick="openOfficeDashboard(\'' + status.companyId + '\', \'' + (status.companyName || '').replace(/'/g, "\\'") + '\')" style="width:100%;margin-top:6px;background:#ff8c42;color:#fff;border:none;">🏢 稼働中の現場を見る</button>';
@@ -10393,9 +10333,6 @@
 
       if (status.isCompanyAdmin) {
         loadCompanyMemberSection(status.companyId, status.isOwner);
-      }
-      if (canManageJobLink) {
-        renderJobCompanyLinkSection(status.companyId, status.companyName);
       }
       if (status.isOwner) {
         renderPhotoModeSection();
@@ -10560,48 +10497,6 @@
           : '写真共有モードを終了しました。保存済みの写真は残っています。');
         renderPhotoModeSection();
       }).catch((e) => window.showAppAlert('切り替えに失敗しました：' + e.message));
-    }
-
-    // 今開いている現場の会社紐付け状況を確認し、紐付け／解除ボタンを出す
-    function renderJobCompanyLinkSection(myCompanyId, myCompanyName) {
-      const el = document.getElementById('jobCompanyLinkStatus');
-      if (!el || !window.currentJobId) return;
-      window.getJobCompanyId(window.currentJobId).then((jobCompanyId) => {
-        const escapedName = myCompanyName.replace(/'/g, "\\'");
-        if (jobCompanyId && jobCompanyId === myCompanyId) {
-          el.innerHTML =
-            '<p style="margin:0 0 8px;">「' + myCompanyName + '」に紐付け済みです。会社の管理者は、この現場に招待なしで入れます。</p>' +
-            '<button onclick="submitUnlinkJobFromCompany()" style="width:100%;background:#fff0f0;border-color:#c88;color:#c00;">紐付けを解除する</button>';
-        } else if (jobCompanyId) {
-          el.innerHTML =
-            '<p style="margin:0 0 8px;">この現場は別の会社に紐付いています。</p>' +
-            '<button onclick="submitLinkJobToCompany(\'' + myCompanyId + '\', \'' + escapedName + '\')" style="width:100%;">「' + myCompanyName + '」に紐付け直す</button>';
-        } else {
-          el.innerHTML =
-            '<p style="margin:0 0 8px;">まだどの会社にも紐付いていません。紐付けると、会社の管理者がこの現場に招待なしで入れるようになります。</p>' +
-            '<button onclick="submitLinkJobToCompany(\'' + myCompanyId + '\', \'' + escapedName + '\')" style="width:100%;">「' + myCompanyName + '」に紐付ける</button>';
-        }
-      }).catch((e) => {
-        el.textContent = '確認に失敗しました：' + e.message;
-      });
-    }
-
-    async function submitLinkJobToCompany(companyId, companyName) {
-      if (!window.currentJobId) return;
-      if (!await window.showAppConfirm('この現場を「' + companyName + '」に紐付けます。会社の管理者はこの現場に招待なしで入れるようになります。よろしいですか？')) return;
-      window.linkJobToCompany(window.currentJobId, companyId).then(() => {
-        window.showAppAlert('紐付けました。');
-        refreshCompanyModal();
-      }).catch((e) => window.showAppAlert('失敗しました：' + e.message));
-    }
-
-    async function submitUnlinkJobFromCompany() {
-      if (!window.currentJobId) return;
-      if (!await window.showAppConfirm('この現場の会社への紐付けを解除します。よろしいですか？')) return;
-      window.unlinkJobFromCompany(window.currentJobId).then(() => {
-        window.showAppAlert('紐付けを解除しました。');
-        refreshCompanyModal();
-      }).catch((e) => window.showAppAlert('失敗しました：' + e.message));
     }
 
     function copyInviteCode() {
