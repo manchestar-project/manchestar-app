@@ -662,7 +662,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-06-b';
+    const APP_BUILD = '2026-10-06-c';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -3331,7 +3331,7 @@
         const bl = document.getElementById('startBuildDisp');
         if (cl) cl.textContent = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
         if (dl) dl.textContent = now.getFullYear() + '.' + String(now.getMonth()+1).padStart(2,'0') + '.' + String(now.getDate()).padStart(2,'0') + '（' + days[now.getDay()] + '）';
-        if (bl) bl.textContent = 'build ' + APP_BUILD;
+        if (bl) bl.textContent = 'Ver.' + APP_BUILD;
         const ss = document.getElementById('startScreen');
         if (ss && ss.style.display !== 'none') setTimeout(tickStartClock, 1000);
       })();
@@ -10088,11 +10088,11 @@
       el.innerHTML =
         '<div style="display:flex;align-items:flex-start;gap:8px;">' +
           '<div style="flex:1;">' +
-            '<b>新しい版があります</b>（' + info.build + '）<br>' +
+            '<b>新しいバージョンがあります</b>（Ver.' + info.build + '）<br>' +
             (info.url
               ? '<a href="' + info.url.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:var(--mc-accent);">詳しくは X で ›</a>'
               : '<span style="color:#ccc;">詳しくは X でお知らせしています。</span>') +
-            '<div style="font-size:11px;color:#bbb;margin-top:2px;">いまの版：' + window.APP_BUILD + '</div>' +
+            '<div style="font-size:11px;color:#bbb;margin-top:2px;">お使いのバージョン：Ver.' + window.APP_BUILD + '</div>' +
           '</div>' +
           '<button type="button" onclick="dismissAppUpdateBanner(\'' + info.build + '\')" title="この版の知らせを閉じる" ' +
             'style="flex-shrink:0;background:none;border:none;color:#ccc;font-size:18px;line-height:1;padding:0 2px;cursor:pointer;">✕</button>' +
