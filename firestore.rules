@@ -9,11 +9,14 @@ rules_version = '2';
 // 2026-09-23：写真の使用量の積算（config/usage）と、オーナーによる数え直しを追加
 // 2026-09-23（Session 38）：古いサイン・写真の掃除のため、旗の会社のオーナーに
 //   現場の一覧（会社の一致に依らない）と、サイン・写真・覚え書きの「読む・消す」を許可
+// 2026-10-05：現場と会社の「紐付け」をやめた。1つの Firebase に会社は1社なので、
+//   ここの現場はすべて旗の会社のもの。会社の管理者・メンバーの判定は、現場に書かれた
+//   companyId ではなく、旗（config/system）が指している会社で行う。
 //
 // このルールでやること
 //   ・ログインしていない人は一切触れない
 //   ・現場が閉じているとき、子機は現場のデータを読めない（サーバーが拒む）
-//   ・現場の持ち主（親機）と、その現場に紐付いた会社の管理者は、閉じていても出入りできる
+//   ・現場の持ち主（親機）と、会社の管理者（オーナーを含む）は、閉じていても出入りできる
 //   ・現場の「骨組み」（持ち主・所属会社・開いている期限・終了の合図）は、
 //     持ち主と会社の管理者しか書き換えられない
 //   ・現場を丸ごと消せるのも、持ち主と会社の管理者だけ
@@ -26,7 +29,7 @@ rules_version = '2';
 //   ・会社メンバーの一覧を読めるのは、オーナーと承認済みの会社管理者だけ
 //   ・自分のメンバー記録は「申請の形（承認待ち・管理者でない）」でしか書けない
 //   ・除名された人は、自分の除名の印に触れない
-//   ・現場の一覧は、その現場が属する会社の承認済みメンバーしか引けない（旗の会社のオーナーは別）
+//   ・現場の一覧は、旗の会社の承認済みメンバー（とオーナー）しか引けない
 //   ・会社登録の旗（config/system）が立ったあとは、2社目の会社を作れない
 //   ・旗と写真モードの設定を書き換えられるのは、旗が指している会社のオーナーだけ
 //   ・旗が立ったあとは、その会社の承認済みメンバーでない人は現場を新しく作れない
@@ -72,18 +75,12 @@ service cloud.firestore {
         && jobData(jobId).openUntil > request.time;
     }
 
-    // この現場に紐付いた会社の「管理者」かどうか
-    function isCompanyAdminOfJob(jobId) {
-      return 'companyId' in jobData(jobId)
-        && jobData(jobId).companyId != null
-        && exists(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid))
-        && get(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid)).data.status == 'approved'
-        && get(/databases/$(database)/documents/companies/$(jobData(jobId).companyId)/members/$(request.auth.uid)).data.isCompanyAdmin == true;
-    }
-
     // この現場を「管理」してよい人か（持ち主 or 会社の管理者）
+    // 【2026-10-05】以前は「この現場に書かれた会社（companyId）の管理者」で判定していた。
+    // 現場を作ったあとの会社の書き足しが通信断で抜けたり、手で紐付けを解除したりすると、
+    // 作った本人以外の管理者が入れなくなっていた。今は旗の会社の管理者で判定する。
     function canManageJob(jobId) {
-      return isJobOwner(jobId) || isCompanyAdminOfJob(jobId);
+      return isJobOwner(jobId) || isFlagCompanyAdmin();
     }
 
     // その会社の登録者（オーナー）かどうか（段階3-C-A で追加）
@@ -116,6 +113,23 @@ service cloud.firestore {
         && isCompanyOwner(get(/databases/$(database)/documents/config/system).data.companyId);
     }
 
+    // 旗が指している会社の「管理者」かどうか（2026-10-05 追加）。オーナーも含める。
+    // オーナーは登録時に管理者として記録されるが、記録が欠けていても締め出さないよう、
+    // オーナーの判定を別に並べている。
+    // 旗がまだ無い Firebase（会社の登録前）では、誰もこの立場にならない。
+    function isFlagCompanyAdmin() {
+      return exists(/databases/$(database)/documents/config/system)
+        && (isCompanyOwner(get(/databases/$(database)/documents/config/system).data.companyId)
+          || isApprovedCompanyAdmin(get(/databases/$(database)/documents/config/system).data.companyId));
+    }
+
+    // 旗が指している会社の「承認済みメンバー」かどうか（2026-10-05 追加）。
+    // 下の isMemberOfThisDeployment と違い、旗が無いときは通さない（現場の一覧で使うため）。
+    function isFlagCompanyMember() {
+      return exists(/databases/$(database)/documents/config/system)
+        && isApprovedCompanyMember(get(/databases/$(database)/documents/config/system).data.companyId);
+    }
+
     // この配布先に会社が登録済みで、自分がその会社の承認済みメンバーかどうか（2026-09-17 追加）。
     // 旗（config/system）がまだ無い Firebase では、会社登録前の立ち上げと既存の運用を
     // 止めないよう、無条件で通す。旗が立った時点から効き始める。
@@ -142,7 +156,7 @@ service cloud.firestore {
       return !jobExists(jobId)
         || isJobOwner(jobId)
         || jobIsOpen(jobId)
-        || isCompanyAdminOfJob(jobId);
+        || isFlagCompanyAdmin();
     }
 
     // 現場の「骨組み」。ここを書き換えられるのは持ち主と会社の管理者だけ。
@@ -168,32 +182,22 @@ service cloud.firestore {
       // 1件ずつ取るのは可。
       allow get: if signedIn() && canEnterJob(jobId);
 
-      // 【段階3-C-Bで締めた】
-      // 現場管理ダッシュボードが inspections を「companyId が一致」かつ
-      // 「workDate が本日」で直接引くため、list を全面禁止にはできない。
-      // 代わりに、返ってくる1件ごとに「その現場が属する会社の承認済みメンバーか」を確かめる。
+      // 【一覧で引けるのは、旗の会社の承認済みメンバーとオーナー（2026-10-05 で整理）】
+      // 稼働中の現場の一覧（ダッシュボード）が inspections を「lastWorkedDate が本日」で、
+      // 古いサイン・写真の掃除（cleanupOneMonth）が「lastWorkedMonth が等しい」で直接引くため、
+      // list を全面禁止にはできない。
       //
-      // 【この形で他社の現場が引けなくなる理由】
-      // list のルールは、返そうとしている1件ずつに対して評価される。1件でも条件を満たさない
-      // ものが混ざると、問い合わせ全体が拒否される。よって他社の companyId を指定しても、
-      // 会社を指定せず全件を取ろうとしても、そこで止まる。
+      // 以前は「その現場に書かれた会社（companyId）のメンバーか」を1件ずつ確かめていた。
+      // そのため紐付いていない現場（会社の書き足しが通信断で抜けた現場・紐付けを解除した現場）が
+      // 一覧にも掃除にも出てこなかった。1つの Firebase に会社は1社なので、ここの現場は
+      // すべて旗の会社のもの。今は現場の中身を見ず、旗の会社のメンバーかどうかだけで決める。
       //
-      // 【呼び出し回数について】ここで会社メンバーを見に行くが、返る現場はすべて同じ会社の
-      // ものなので、参照先の宛先が同一になり1回分として扱われる。上限には当たらない。
+      // 【会社のメンバーでない人は引けない】QR で入った応援の人や、承認待ちの人は通らない。
+      // 応援の人が現場に入るのは1件ずつの get なので、ここには関係しない。
       //
-      // 【旗の会社のオーナーは、会社の一致に関係なく引ける（2026-09-23 Session 38）】
-      // 古いサイン・写真の掃除（cleanupOneMonth）が、現場を「lastWorkedMonth が等しい」
-      // だけで引くため。1つの Firebase に会社は1社なので、ここの現場はすべてその会社のもの。
-      // 会社の一致で引くと、紐付いていない現場（自動の紐付けが通信断で落ちた現場・
-      // 紐付けを解除した現場）が掃除から漏れ、サインも写真も残り続ける。
-      // オーナーは Firebase を用意した側で、管理画面からなら元々すべてを見て消せる。
-      // アプリの中で同じ範囲を許しても、できることの範囲は変わらない。
-      // 【並びの理由】オーナーの判定を先に置く。この判定は取り出す現場の中身に依らないので、
-      // 会社を指定しない問い合わせでも、ここで通る。
+      // 【並びの理由】オーナーの判定を先に置く。オーナーのメンバー記録が欠けていても掃除が止まらないように。
       allow list: if signedIn()
-        && (isFlagCompanyOwner()
-          || ('companyId' in resource.data
-            && isApprovedCompanyMember(resource.data.companyId)));
+        && (isFlagCompanyOwner() || isFlagCompanyMember());
 
       // 新規作成は、自分を持ち主として書き込む場合のみ。
       // これにより「持ち主の書かれていない現場」がサーバー上に生まれることがなくなる。
@@ -229,7 +233,9 @@ service cloud.firestore {
     }
 
     // 古いサイン・写真の掃除のための通り道（2026-09-23 Session 38）。
-    // 旗の会社のオーナーは、紐付いていない他人の現場にも入れないので、上の段では通らない。
+    // 当時は、旗の会社のオーナーでも紐付いていない他人の現場には入れず、上の段では通らなかった。
+    // 2026-10-05 に紐付けをやめてからは、オーナーは上の段（canEnterJob）でも通る。
+    // ここは同じ範囲を重ねて許しているだけなので、動きは変わらない。念のため残している。
     // 掃除に要る「読む・消す」だけを、この3か所に限って許す（書き込み・作成は許さない）。
     // 読む：サインと覚え書きの一覧、覚え書きの無い本体の件数と一覧。
     // ルールは段どうしで「どれか1つが通ればよい」ので、上の段の条件はそのまま効く。
@@ -370,9 +376,6 @@ service cloud.firestore {
     // セッション27で写しを廃止し、ダッシュボードは inspections を直接引くようになった。
     // 以前ここを通していた包括ルール（companies/{document=**}）は削除したため、
     // 残っている古い写しのデータには誰も触れなくなる。読み書きしている箇所はもう無い。
-    // 【注意】index.html に saveCompanyGenbaSummary / removeCompanyGenbaSummary が
-    // 定義だけ残っている（誰も呼んでいない）。もし呼ぶとここで拒否される。
-    // 呼ばないか、消すこと（要望リスト B-15）。
 
     // ---- 招待コードの索引（段階3-C-A）----
     //
@@ -504,10 +507,10 @@ service cloud.firestore {
     // 積算を置き換える。合計はサーバー側の集計（sum）で取るので、覚え書きそのものは
     // 端末に流れない。
     //
-    // 【現場ごとに回さない理由】会社に紐付いていない現場（作成者がまだ承認待ちのときに
-    // 作られた現場など）の写真も、この Firebase の容量を使っている。現場の一覧は
-    // 会社の一致でしか引けないため、現場ごとに回すとその分を数え落とし、
-    // 実際より少なく見える。
+    // 【現場ごとに回さない理由】現場を1件ずつ回ると、そのぶん読み出しの回数がかさむ。
+    // 覚え書きをまとめて1回の集計で数えれば、現場が増えても1回で済む。
+    // （以前は「会社に紐付いていない現場を数え落とすため」も理由だった。2026-10-05 に
+    //   紐付けをやめたので、今はその心配は無い。）
     //
     // 【ここで許すのは list だけ】1件ずつ読む必要は無い。写真の中身（photos）にも
     // 覚え書きの中身にも、この段では触れない。
