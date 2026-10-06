@@ -608,7 +608,7 @@
     // url は知らせからつなぐ先（X の投稿や note）。アプリに書き込まずここに持たせるので、
     // つなぐ先を変えたいときは latest.json を書き換えるだけで済む。
     // 空のあいだは確かめに行かない。
-    const UPDATE_CHECK_URL = '';
+    const UPDATE_CHECK_URL = 'https://raw.githubusercontent.com/manchestar-project/manchestar-app/main/latest.json';
     window.UPDATE_CHECK_URL = UPDATE_CHECK_URL;
 
     // ===== 利用条件の版 =====
@@ -662,7 +662,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-06-a';
+    const APP_BUILD = '2026-10-06-b';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -5385,7 +5385,7 @@
           toggle.textContent = '📧 メールで受け取る形に切り替える';
           switchWrap.style.display = 'block';
         } else {
-          // アドレスの無いログイン（テストモードなど）では切り替えを出さない
+          // アドレスの無いログインでは切り替えを出さない
           switchText.textContent = 'iPhoneでQRがうまく開けない場合は、上の「リンクをコピー」を押して、メールやLINEなどで相手に送ってください。';
           toggle.style.display = 'none';
           switchWrap.style.display = 'block';
