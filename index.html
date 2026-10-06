@@ -6,7 +6,72 @@
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <meta name="screen-orientation" content="portrait">
   <title>消防設備点検アプリ</title>
+  <script>
+    // ===== 最初に動かすもの（画面を描く前） =====================================
+    // 【web.app → firebaseapp.com へ移す（2026-10-06）】
+    // Firebase Hosting は同じアプリを「〇〇〇.web.app」と「〇〇〇.firebaseapp.com」の2か所に置く。
+    // ログインの窓は firebaseapp.com 側で開くため、アプリを web.app で開くと、Safari が
+    // 2つを別のサイトとして扱い、ログインの窓が自分の覚え書きを読めないことがある
+    // （「missing initial state」の警告が1回出て、2回目で通る）。
+    // アプリも firebaseapp.com で開けば同じサイトになり、この警告が出ない。設定の追加も要らない。
+    // 【注意】端末に覚えている内容（ログイン状態・続きの現場など）はアドレスごとに別。
+    // 移った先では、初回だけログインし直しになる。
+    (function () {
+      var h = location.hostname;
+      if (/\.web\.app$/.test(h)) {
+        location.replace('https://' + h.replace(/\.web\.app$/, '.firebaseapp.com') +
+          location.pathname + location.search + location.hash);
+      }
+    })();
+
+    // 【テーマ色（2026-10-06）】
+    // 会社ごとに、帯の色とアクセントの2色だけを変える。オーナーが会社の画面で選ぶ（旗の theme）。
+    // 開いた瞬間から色が出るよう、一度読んだテーマを端末に覚えておく（会社ごとにアドレスが違うので混ざらない）。
+    // 色は CSS の変数 --mc-band・--mc-accent・--mc-accent-rgb で配っている。
+    // 立面図のマスの色・不良の赤・済の緑・立場の色・号棟の色・印刷物は、ここに関係なく変わらない。
+    window.MC_THEMES = {
+      basic:    { name: 'ベーシック', band: '#182C3A', accent: '#FF8C42', rgb: '255,140,66' },
+      forest:   { name: 'フォレスト', band: '#1F3D2B', accent: '#F2C230', rgb: '242,194,48' },
+      wine:     { name: 'ワイン',     band: '#4A1C2C', accent: '#D4A84B', rgb: '212,168,75' },
+      ocean:    { name: 'オーシャン', band: '#0F3B5C', accent: '#4FC3F7', rgb: '79,195,247' },
+      slate:    { name: 'スレート',   band: '#2F3438', accent: '#9CCC3C', rgb: '156,204,60' },
+      lavender: { name: 'ラベンダー', band: '#3A2A55', accent: '#F08DB8', rgb: '240,141,184' }
+    };
+    window.MC_THEME_ORDER = ['basic', 'forest', 'wine', 'ocean', 'slate', 'lavender'];
+    // 知らない値・空は「ベーシック」に倒す（テーマを選ぶ前の会社も今までの色のまま）。
+    window.mcThemeId = function (id) { return (id && window.MC_THEMES[id]) ? id : 'basic'; };
+    window.applyMcTheme = function (id) {
+      var key = window.mcThemeId(id);
+      var t = window.MC_THEMES[key];
+      var st = document.documentElement.style;
+      st.setProperty('--mc-band', t.band);
+      st.setProperty('--mc-accent', t.accent);
+      st.setProperty('--mc-accent-rgb', t.rgb);
+      try { localStorage.setItem('mc_theme', key); } catch (e) {}
+      return key;
+    };
+    // 会社名を帯に出す。空なら隠れる（CSS の :empty）。
+    window.applyMcCompanyName = function (name) {
+      var v = (name || '').trim();
+      try { if (v) localStorage.setItem('mc_company_name', v); else localStorage.removeItem('mc_company_name'); } catch (e) {}
+      var els = document.querySelectorAll('.mc-company-name');
+      for (var i = 0; i < els.length; i++) els[i].textContent = v;
+    };
+    (function () {
+      var kept = null;
+      try { kept = localStorage.getItem('mc_theme'); } catch (e) {}
+      window.applyMcTheme(kept);
+      document.addEventListener('DOMContentLoaded', function () {
+        var n = '';
+        try { n = localStorage.getItem('mc_company_name') || ''; } catch (e) {}
+        window.applyMcCompanyName(n);
+      });
+    })();
+  </script>
   <style>
+    :root { --mc-band: #182C3A; --mc-accent: #FF8C42; --mc-accent-rgb: 255,140,66; }
+    .mc-company-name { font-size: 11px; color: rgba(255,255,255,0.85); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62vw; line-height: 1.3; }
+    .mc-company-name:empty { display: none; }
     * { box-sizing: border-box; }
     body {
       font-family: sans-serif; margin: 0; padding: 0; overflow-x: hidden;
@@ -89,7 +154,7 @@
     #setup #backToSetupBtn { display:none; }
     #setup #propertyInputArea { padding: 16px 16px 0; }
     #setup #propertyInputArea p { display:none; }
-    #setup .setup-new-header { background:#182C3A; border-bottom:3px solid #ff8c42; padding:10px 16px; display:flex; align-items:center; justify-content:space-between; }
+    #setup .setup-new-header { background:var(--mc-band); border-bottom:3px solid var(--mc-accent); padding:10px 16px; display:flex; align-items:center; justify-content:space-between; }
     #setup .setup-section { font-size:20px; color:#2a2520; letter-spacing:1px; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
     #setup .setup-section::after { content:''; flex:1; height:1px; background:rgba(0,0,0,0.2); }
     #setup .setup-body { padding:14px 16px; }
@@ -112,7 +177,7 @@
     .setsubi-inputs span { font-size: 13px; }
     .setsubi-inputs input { width: 50px; font-size: 14px; margin: 0; }
 
-    #yoyakuArea { margin-top: 0; padding: 16px 20px; display: none; border-top: 3px solid #ff8c42; background: #182C3A; }
+    #yoyakuArea { margin-top: 0; padding: 16px 20px; display: none; border-top: 3px solid var(--mc-accent); background: var(--mc-band); }
     #yoyakuArea h2 { font-size: 16px; margin: 0; color: #fff; }
     #yoyakuTable { border-collapse: collapse; width: 100%; margin-top: 8px; table-layout: fixed; }
     #yoyakuTable th { border: 1px solid #333; background: #ddd; padding: 4px 2px; font-size: 12px; text-align: center; }
@@ -137,11 +202,11 @@
     .yoyaku-sort-label { font-size: 11px; color: rgba(255,255,255,0.62); }
     .yoyaku-sort-track { display: inline-flex; background: rgba(0,0,0,0.28); border-radius: 7px; padding: 2px; }
     .yoyaku-sort-btn { font-size: 12px; padding: 4px 12px; border: none; background: transparent; color: rgba(255,255,255,0.5); border-radius: 5px; cursor: pointer; transition: background 0.12s, color 0.12s; }
-    .yoyaku-sort-btn.active { background: #ff8c42; color: #fff; font-weight: bold; }
+    .yoyaku-sort-btn.active { background: var(--mc-accent); color: #fff; font-weight: bold; }
     #notePatternManage { margin-top: 8px; font-size: 13px; }
-    #notePatternManage a { cursor: pointer; color: #ff8c42; text-decoration: underline; }
+    #notePatternManage a { cursor: pointer; color: var(--mc-accent); text-decoration: underline; }
 
-    #outputArea { margin-top: 0; padding: 16px 20px 20px; display: none; background: #182C3A; }
+    #outputArea { margin-top: 0; padding: 16px 20px 20px; display: none; background: var(--mc-band); }
     #outputArea button { margin-right: 8px; margin-bottom: 8px; font-size: 14px; padding: 8px 14px; }
     #textOutput { margin-top: 12px; width: 100%; height: 150px; font-size: 13px; display: none; }
 
@@ -204,12 +269,12 @@
 
     /* ⑥ メンバー管理モーダル（D案デザイン） */
     #memberModal .modal-box {
-      background: #182C3A; border: 1px solid #2a3040; border-radius: 12px;
+      background: var(--mc-band); border: 1px solid #2a3040; border-radius: 12px;
       max-width: 400px; text-align: left; padding: 0; overflow: hidden;
       box-shadow: 0 20px 60px rgba(0,0,0,0.6);
     }
     #memberModal h2 {
-      background: #1a1e25; border-bottom: 2px solid #ff8c42; color: white;
+      background: #1a1e25; border-bottom: 2px solid var(--mc-accent); color: white;
       margin: 0; padding: 14px 18px; font-size: 15px; text-align: left;
     }
     #memberModal .member-desc { padding: 14px 18px 0; font-size: 12px; color: #6a7280; margin-bottom: 4px; }
@@ -241,7 +306,7 @@
 
     /* ⑦ 点検中モーダル（D案デザイン） */
     #tenkenModal .modal-box {
-      background:#182C3A; border:1px solid #000; border-radius:12px;
+      background:var(--mc-band); border:1px solid #000; border-radius:12px;
       max-width:360px; padding:0; overflow:hidden;
       box-shadow:0 0 30px rgba(0,0,0,0.3);
     }
@@ -262,7 +327,7 @@
     #tenkenModal .modal-buttons button {
       width:100%; box-sizing:border-box; height:52px; font-size:16px; padding:0 10px; border-radius:6px;
       cursor:pointer; font-weight:normal; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-      border:1px solid rgba(255,255,255,0.2); border-bottom:3px solid #ff8c42;
+      border:1px solid rgba(255,255,255,0.2); border-bottom:3px solid var(--mc-accent);
     }
     #tenkenModal #tenkenFinishBtn { background:#1a4a2a; color:#2ecc71; }
     #tenkenModal #tenkenFuryoBtn { background:linear-gradient(150deg,#5e3310,#3d2008); color:#ff8c42; }
@@ -316,7 +381,7 @@
     #welcomeScreen p { font-size: 15px; line-height: 1.8; color: #3a3530; margin-bottom: 30px; }
     #welcomeScreen button { font-size: 16px; padding: 14px; width: 100%; background: #e07020; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; box-shadow: 4px 4px 10px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1); }
 
-    #loginScreen { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #182C3A; z-index: 9999; justify-content: center; align-items: center; text-align: center; padding: 40px; }
+    #loginScreen { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--mc-band); z-index: 9999; justify-content: center; align-items: center; text-align: center; padding: 40px; }
     #loginScreen.active { display: flex; }
     #loginScreen .login-box { max-width: 340px; width: 100%; }
     #loginScreen h2 { font-size: 20px; margin-bottom: 16px; color: #333; }
@@ -330,7 +395,7 @@
     #debugPanel { position: fixed; top: 0; left: 0; width: 100%; max-height: 50vh; overflow-y: auto; background: rgba(0,0,0,0.88); color: #0f0; font-size: 10px; font-family: monospace; z-index: 99999; padding: 8px; box-sizing: border-box; white-space: pre-wrap; word-break: break-all; }
 
     /* ロゴ：マンチェスター */
-    .mc-accent { color: #ff8c42; }
+    .mc-accent { color: var(--mc-accent); }
 
     .mc-logo-h {
       display: flex;
@@ -423,9 +488,10 @@
       vertical-align: top;
     }
     #highlightToggleBtn.on {
-      background: #fff3e0;
-      border-color: #ff8c42;
-      color: #ff8c42;
+      /* 明るいアクセント（黄・水色など）でも文字が読めるよう、文字は濃い色のまま、地と枠だけ色を付ける */
+      background: rgba(var(--mc-accent-rgb), 0.18);
+      border-color: var(--mc-accent);
+      color: #1a1a1a;
     }
   </style>
 
@@ -596,7 +662,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-05-a';
+    const APP_BUILD = '2026-10-06-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -2169,8 +2235,10 @@
     // ⚠️ 旗は必ず会社の直後。会社より先だとルールで弾かれて登録が全滅し、
     //    メンバーより後だと、ほぼ同時に登録した後の人が承認済みメンバーになってしまう。
     const COMPANY_ALREADY_REGISTERED_MSG = 'この Firebase には既に会社が登録されています。';
-    window.registerCompany = function(companyName) {
+    window.registerCompany = function(companyName, themeId) {
       if (!window.currentUser) return Promise.reject(new Error('ログインが完了していません'));
+      // テーマ色（2026-10-06）。知らない値はベーシックに倒す。
+      const theme = window.mcThemeId ? window.mcThemeId(themeId) : 'basic';
       const companyRef = doc(collection(db, 'companies'));
       const inviteCode = generateInviteCode();
       const flagRef = doc(db, 'config', 'system');
@@ -2199,6 +2267,7 @@
         companyName: companyName,
         photoMode: false,
         billingEnabled: false,
+        theme: theme,
         createdAt: serverTimestamp()
       }).catch((e) => {
         // 会社を書いたあとに旗で弾かれた＝ほぼ同時に別の人が先に登録した。
@@ -2586,6 +2655,12 @@
     window.refreshPhotoMode = function() {
       if (!window.loadCompanyFlag) { window.photoMode = false; return Promise.resolve(false); }
       return window.loadCompanyFlag().then((flag) => {
+        // 【テーマ色と会社名（2026-10-06）】同じ1回の読み出しで、帯の色と会社名も合わせる。
+        // ここはホームを通る人も、QR で直接現場へ入る応援の人も必ず通る。
+        // 会社がまだ無い（旗が無い）ときはベーシック・会社名なしに戻す。読めなかったとき（下の catch）は、
+        // 端末に覚えている色と会社名のまま触らない。
+        if (window.applyMcTheme) window.applyMcTheme(flag && flag.theme);
+        if (window.applyMcCompanyName) window.applyMcCompanyName(flag ? flag.companyName : '');
         window.photoMode = !!(flag && flag.photoMode);
         window.photoBillingEnabled = !!(flag && flag.billingEnabled);
         dlog('写真共有モード / ' + (window.photoMode ? 'ON' : 'OFF') +
@@ -2611,6 +2686,21 @@
         window.photoMode = !!on;
         dlog('写真共有モード / 切り替え / ' + (on ? 'ON' : 'OFF'));
         return !!on;
+      });
+    };
+
+    // テーマ色を変える（2026-10-06）。旗を書けるのはオーナーだけ（ルールでも弾かれる）。
+    // 旗の他のフィールドには触らない。自分の画面にはすぐ反映し、ほかの端末は次に開いたときに変わる。
+    window.setCompanyTheme = function(themeId) {
+      const theme = window.mcThemeId ? window.mcThemeId(themeId) : 'basic';
+      const flagRef = doc(db, 'config', 'system');
+      return getDoc(flagRef).then((snap) => {
+        if (!snap.exists()) throw new Error('この Firebase にはまだ会社が登録されていません。');
+        return updateDoc(flagRef, { theme: theme });
+      }).then(() => {
+        if (window.applyMcTheme) window.applyMcTheme(theme);
+        dlog('テーマ色 / 切り替え / ' + theme);
+        return theme;
       });
     };
 
@@ -3547,10 +3637,14 @@
   <!-- ログイン後の新規/既存選択画面 -->
   <div id="startScreen" style="display:none;position:fixed;inset:0;background:linear-gradient(180deg,#716B66 0%,#BCB8AD 100%);z-index:100;overflow-y:auto;">
     <!-- ヘッダー（画面幅いっぱい） -->
-    <div style="background:#182C3A;border-bottom:3px solid #ff8c42;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="background:#ff8c42;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">消防設備</span>
-        <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:#ff8c42;">CHE</span>Star</span>
+    <div style="background:var(--mc-band);border-bottom:3px solid var(--mc-accent);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="background:var(--mc-accent);color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">消防設備</span>
+          <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:var(--mc-accent);">CHE</span>Star</span>
+        </div>
+        <!-- 会社名（旗から。応援の人にも出る。空なら隠れる） -->
+        <div class="mc-company-name"></div>
       </div>
       <div style="text-align:right;font-size:11px;color:#7a9ab0;line-height:1.6;">
         <div id="startClockDisp" style="font-size:13px;color:white;font-family:'Inter',sans-serif;font-weight:600;"></div>
@@ -3563,7 +3657,7 @@
       <!-- 新しい版の知らせ（会社のオーナーにだけ出す。中身は checkAppUpdate が入れる） -->
       <!-- 利用条件の更新の知らせ（会社のオーナーにだけ出す。中身は checkTermsVersion が入れる） -->
       <div id="termsBanner" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:rgba(90,170,230,0.15);border:1px solid #6ab4e8;color:#fff;font-size:13px;line-height:1.6;"></div>
-      <div id="appUpdateBanner" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:rgba(255,140,66,0.15);border:1px solid #ff8c42;color:#fff;font-size:13px;line-height:1.6;"></div>
+      <div id="appUpdateBanner" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:rgba(var(--mc-accent-rgb),0.15);border:1px solid var(--mc-accent);color:#fff;font-size:13px;line-height:1.6;"></div>
       <!-- 所属・ログイン状態（会社名／ログイン中／ダッシュボードを1枠に統合） -->
       <div style="background:#1a1e25;border:1px solid #2a3040;border-radius:6px;margin-bottom:20px;overflow:hidden;">
         <!-- 会社（タップで会社の画面） -->
@@ -3577,7 +3671,7 @@
         </div>
         <!-- 現場管理ダッシュボード（会社の管理者のみ表示） -->
         <div id="startScreenDashboardWrap" style="display:none;border-top:1px solid #262d3a;padding:8px 10px 10px;">
-          <button onclick="openOfficeDashboardFromStartScreen()" style="width:100%;background:rgba(255,140,66,0.45);color:#fff;border:1px solid rgba(255,255,255,0.55);border-radius:5px;padding:9px;font-size:13px;font-weight:bold;cursor:pointer;">🏢 稼働中の現場を見る</button>
+          <button onclick="openOfficeDashboardFromStartScreen()" style="width:100%;background:rgba(var(--mc-accent-rgb),0.45);color:#fff;border:1px solid rgba(255,255,255,0.55);border-radius:5px;padding:9px;font-size:13px;font-weight:bold;cursor:pointer;">🏢 稼働中の現場を見る</button>
         </div>
       </div>
       <!-- メンバーでない人・承認待ちの人への案内（refreshStartScreenCompanyStatus が中身を書く） -->
@@ -3609,8 +3703,8 @@
       <p id="noContinueNote" style="display:none;text-align:center;font-size:12px;color:#2a2520;margin-top:-4px;margin-bottom:8px;">（継続中の物件がありません）</p>
       <!-- 既存物件から新規 -->
       <div id="startExistingBtn" onclick="startExistingProperty()" style="background:linear-gradient(150deg,#5e3310,#3d2008);border-radius:8px;padding:16px 20px;margin-bottom:10px;position:relative;overflow:hidden;cursor:pointer;border:1px solid rgba(255,255,255,0.07);box-shadow:4px 4px 10px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.08);">
-        <div style="position:absolute;left:0;top:0;width:4px;height:100%;background:#ff8c42;border-radius:8px 0 0 8px;"></div>
-        <div style="position:absolute;top:8px;right:10px;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(255,140,66,0.2);color:#ff8c42;">EDIT</div>
+        <div style="position:absolute;left:0;top:0;width:4px;height:100%;background:var(--mc-accent);border-radius:8px 0 0 8px;"></div>
+        <div style="position:absolute;top:8px;right:10px;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(var(--mc-accent-rgb),0.2);color:var(--mc-accent);">EDIT</div>
         <div style="display:flex;align-items:center;gap:14px;">
           <div style="font-size:24px;width:40px;text-align:center;flex-shrink:0;">🗂</div>
           <div><div style="font-size:14px;font-weight:700;color:white;margin-bottom:3px;">既存物件を編集</div><div style="font-size:11px;color:rgba(255,255,255,0.45);">過去の設備情報の編集・引用して新規登録など</div></div>
@@ -3690,9 +3784,13 @@
   <div id="setup">
     <!-- ヘッダー -->
     <div class="setup-new-header">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="background:#ff8c42;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">設定</span>
-        <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:#ff8c42;">CHE</span>Star</span>
+      <div style="min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="background:var(--mc-accent);color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">設定</span>
+          <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:var(--mc-accent);">CHE</span>Star</span>
+        </div>
+        <!-- 会社名（旗から。応援の人にも出る。空なら隠れる） -->
+        <div class="mc-company-name"></div>
       </div>
       <div style="text-align:right;font-size:11px;color:#7a9ab0;line-height:1.6;">
         <div id="userEmailLabel" style="color:#7a9ab0;"></div>
@@ -3769,7 +3867,7 @@
 
       <div id="multiBuildingArea" style="display:none;"></div>
       <p id="multiBuildingNote" style="display:none;font-size:11px;color:#4a4040;margin:-4px 0 8px;">※ 号室は自動採番（◯階◯号室）になります。住戸内設備情報は棟ごとに使用有無だけ設定でき、系統ごとの定・差・煙の初期数は0からになります（いずれも表作成後に号室ごとの個別編集が可能です）。棟名や階数を登録すると、下の「スケジュール設定」で棟ごとに担当を指定できるようになります。実際の立面図は、一番下の「設定内容で立面図を作成」で作成されます。</p>
-      <button type="button" id="generateMultiBuildingsBtn" onclick="registerMultiBuildingComposition()" style="display:none;width:100%;background:#ff8c42;color:#fff;border:none;border-radius:6px;padding:10px;font-size:14px;font-weight:bold;cursor:pointer;margin-bottom:6px;">🏢 住戸構成を登録</button>
+      <button type="button" id="generateMultiBuildingsBtn" onclick="registerMultiBuildingComposition()" style="display:none;width:100%;background:var(--mc-accent);color:#fff;border:none;border-radius:6px;padding:10px;font-size:14px;font-weight:bold;cursor:pointer;margin-bottom:6px;">🏢 住戸構成を登録</button>
       <p id="multiBuildingRegisterStatus" style="display:none;font-size:12px;color:#2a6b2a;margin:0 0 10px;text-align:center;"></p>
 
       <div id="setsubiSetupArea">
@@ -3822,10 +3920,14 @@
 
   <div id="propertyArea" style="display:none;width:100%;box-sizing:border-box;">
     <!-- ヘッダー -->
-    <div style="background:#182C3A;border-bottom:3px solid #ff8c42;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="background:#ff8c42;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">立面図</span>
-        <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:#ff8c42;">CHE</span>Star</span>
+    <div style="background:var(--mc-band);border-bottom:3px solid var(--mc-accent);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="background:var(--mc-accent);color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:1px;">立面図</span>
+          <span style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:white;">Man<span style="color:var(--mc-accent);">CHE</span>Star</span>
+        </div>
+        <!-- 会社名（旗から。応援の人にも出る。空なら隠れる） -->
+        <div class="mc-company-name"></div>
       </div>
       <div style="text-align:right;font-size:11px;color:#7a9ab0;line-height:1.4;">
         <span id="myRoleLabel" style="font-weight:bold;color:#ff8c42;"></span>
@@ -3841,14 +3943,14 @@
       <div id="actionButtonsWrap">
         <button id="actionButtonsToggle" type="button" onclick="toggleActionButtonsRow()" style="width:100%;text-align:left;font-size:14px;padding:9px 12px;background:rgba(255,255,255,0.4);color:#1a1a1a;border:1px solid rgba(0,0,0,0.12);border-radius:6px;cursor:pointer;margin-bottom:8px;">▼ 操作メニューを開く</button>
         <div id="actionButtonsRow" style="display:none;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
-          <button id="qrInviteBtn" onclick="openQrModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📱</span> 子機を招待（QR）</button>
-          <button id="scheduleBtn" onclick="openScheduleModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📅</span> スケジュール確認</button>
-          <button id="memberBtn" onclick="openMemberModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">👥</span> メンバー管理</button>
-          <button id="jobListBtn" onclick="openJobListModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📋</span> 現場一覧</button>
-          <button id="toSetupBtn" onclick="backToSetupConfirmed()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">⚙️</span> 一括設定画面へ</button>
-          <button id="downloadDataBtn" onclick="downloadPropertyData()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">💾</span> 物件データをダウンロード</button>
-          <button id="photoZipBtn" onclick="openPhotoZip()" style="display:none;flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📦</span> 写真をZIPで保存</button>
-          <button id="leaveJobBtn" onclick="confirmLeaveJob()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:#336699;color:white;font-weight:bold;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;"><span style="font-size:20px;">🚪</span> この現場から退場</button>
+          <button id="qrInviteBtn" onclick="openQrModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📱</span> 子機を招待（QR）</button>
+          <button id="scheduleBtn" onclick="openScheduleModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📅</span> スケジュール確認</button>
+          <button id="memberBtn" onclick="openMemberModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">👥</span> メンバー管理</button>
+          <button id="jobListBtn" onclick="openJobListModal()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📋</span> 現場一覧</button>
+          <button id="toSetupBtn" onclick="backToSetupConfirmed()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">⚙️</span> 一括設定画面へ</button>
+          <button id="downloadDataBtn" onclick="downloadPropertyData()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">💾</span> 物件データをダウンロード</button>
+          <button id="photoZipBtn" onclick="openPhotoZip()" style="display:none;flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:rgba(255,255,255,0.55);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">📦</span> 写真をZIPで保存</button>
+          <button id="leaveJobBtn" onclick="confirmLeaveJob()" style="flex:1;min-width:120px;font-size:15px;padding:9px 10px;background:#336699;color:white;font-weight:bold;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;"><span style="font-size:20px;">🚪</span> この現場から退場</button>
         </div>
       </div>
     </div>
@@ -4015,7 +4117,7 @@
       <div id="calendarGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;"></div>
       <div class="modal-buttons" style="margin-top:14px;">
         <button type="button" onclick="closeMultiDateCalendar()" style="background:#eee;">キャンセル</button>
-        <button type="button" onclick="confirmMultiDateCalendar()" style="background:#ff8c42;color:#fff;">決定</button>
+        <button type="button" onclick="confirmMultiDateCalendar()" style="background:var(--mc-accent);color:#fff;">決定</button>
       </div>
     </div>
   </div>
@@ -4055,7 +4157,7 @@
     </table>
   </div>
 
-  <div id="memoArea" style="display:none;margin-top:0;padding:16px 20px;border-top:none;background:#182C3A;">
+  <div id="memoArea" style="display:none;margin-top:0;padding:16px 20px;border-top:none;background:var(--mc-band);">
     <div style="font-weight:bold;font-size:16px;margin-bottom:8px;color:#fff;">現場メモ（音声入力可）</div>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <input type="text" id="memoInput" placeholder="メモを入力..." style="flex:1;font-size:14px;padding:6px 8px;border:1px solid #ccc;border-radius:4px;">
@@ -4067,10 +4169,10 @@
 
   <div id="outputArea">
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
-      <button id="printChoiceBtn" onclick="openPrintChoiceModal()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;">🖨 印刷</button>
-      <button id="furyoTextToggleBtn" onclick="toggleFuryoText()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;">不良一覧テキストを表示</button>
-      <button onclick="deleteAllSigns()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#ff8080;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;">サイン画像を削除（印刷完了後）</button>
-      <button id="sendLogBtn" onclick="sendLogByEmail()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#d8a8ff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #ff8c42;border-radius:6px;cursor:pointer;">ログをメールで送る</button>
+      <button id="printChoiceBtn" onclick="openPrintChoiceModal()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;">🖨 印刷</button>
+      <button id="furyoTextToggleBtn" onclick="toggleFuryoText()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;">不良一覧テキストを表示</button>
+      <button onclick="deleteAllSigns()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#ff8080;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;">サイン画像を削除（印刷完了後）</button>
+      <button id="sendLogBtn" onclick="sendLogByEmail()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:rgba(255,255,255,0.12);color:#d8a8ff;border:1px solid rgba(255,255,255,0.2);border-bottom:3px solid var(--mc-accent);border-radius:6px;cursor:pointer;">ログをメールで送る</button>
       <button id="endWorkBtn" onclick="endWorkSession()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:#c62828;color:white;font-weight:bold;border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;">本日の作業を終了する</button>
       <button id="completePropertyBtn" onclick="confirmCompleteProperty()" style="flex:1;min-width:120px;font-size:14px;padding:9px 10px;background:#1a7a35;color:white;font-weight:bold;border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer;">🏁 この物件を完了にする</button>
     </div>
@@ -4181,7 +4283,7 @@
       <div id="furyoPrePrintBody" style="text-align:left;"></div>
       <div class="modal-buttons" style="margin-top:14px;">
         <button onclick="closeFuryoPrePrint()">やめる</button>
-        <button id="furyoPrePrintGo" onclick="goFuryoPrePrint()" style="background:#ff8c42;color:#fff;border-color:#ff8c42;font-weight:bold;">この内容で印刷</button>
+        <button id="furyoPrePrintGo" onclick="goFuryoPrePrint()" style="background:var(--mc-accent);color:#fff;border-color:var(--mc-accent);font-weight:bold;">この内容で印刷</button>
       </div>
     </div>
   </div>
@@ -6099,7 +6201,7 @@
         cell.textContent = d;
         const selected = calTempSelected.has(dateStr);
         cell.style.cssText = 'text-align:center;padding:7px 0;border-radius:6px;cursor:pointer;font-size:13px;' +
-          (selected ? 'background:#ff8c42;color:#fff;font-weight:bold;' : 'background:#f5f5f5;color:#1a1a1a;');
+          (selected ? 'background:var(--mc-accent);color:#fff;font-weight:bold;' : 'background:#f5f5f5;color:#1a1a1a;');
         cell.onclick = () => toggleCalendarDate(dateStr);
         grid.appendChild(cell);
       }
@@ -8292,7 +8394,7 @@
       let html = mcRotateButtonsHtml('rotateSavedPhoto(-1)', 'rotateSavedPhoto(1)', busy);
       if (ctx.turns !== 0) {
         // 回すたびに書き直すと、そのたびに圧縮がかかって画質が落ちる。決めたときに1回だけ書く。
-        html += '<button onclick="saveSavedPhotoRotation()" style="width:100%;background:#ff8c42;color:#fff;border-color:#ff8c42;font-weight:bold;"' + dis + '>' +
+        html += '<button onclick="saveSavedPhotoRotation()" style="width:100%;background:var(--mc-accent);color:#fff;border-color:var(--mc-accent);font-weight:bold;"' + dis + '>' +
           (busy ? '処理中…' : 'この向きで保存') + '</button>';
       } else {
         // 回した向きを保存していない間は、端末への保存を出さない（古い向きで保存されて紛らわしいため）
@@ -9811,9 +9913,9 @@
 
     const GATE_BOX = 'background:#1a1e25;border:1px solid #2a3040;border-radius:6px;padding:16px 16px 14px;color:#c8ced8;font-size:13px;line-height:1.7;';
     const GATE_H = 'font-size:16px;font-weight:bold;color:#fff;margin:0 0 10px;line-height:1.4;word-break:break-word;';
-    const GATE_SUB = 'font-size:13px;font-weight:bold;color:#ff8c42;margin:16px 0 4px;';
+    const GATE_SUB = 'font-size:13px;font-weight:bold;color:var(--mc-accent);margin:16px 0 4px;';
     const GATE_BTN = 'display:block;width:100%;box-sizing:border-box;margin-top:10px;padding:10px;border-radius:5px;font-size:13px;cursor:pointer;';
-    const GATE_BTN_MAIN = GATE_BTN + 'background:rgba(255,140,66,0.45);color:#fff;border:1px solid rgba(255,255,255,0.55);font-weight:bold;';
+    const GATE_BTN_MAIN = GATE_BTN + 'background:rgba(var(--mc-accent-rgb),0.45);color:#fff;border:1px solid rgba(255,255,255,0.55);font-weight:bold;';
     const GATE_BTN_SUB = GATE_BTN + 'background:transparent;color:#9aa4b2;border:1px solid #3a4252;';
 
     function gateDistributionLink() {
@@ -9988,7 +10090,7 @@
           '<div style="flex:1;">' +
             '<b>新しい版があります</b>（' + info.build + '）<br>' +
             (info.url
-              ? '<a href="' + info.url.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:#ffb27a;">詳しくは X で ›</a>'
+              ? '<a href="' + info.url.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:var(--mc-accent);">詳しくは X で ›</a>'
               : '<span style="color:#ccc;">詳しくは X でお知らせしています。</span>') +
             '<div style="font-size:11px;color:#bbb;margin-top:2px;">いまの版：' + window.APP_BUILD + '</div>' +
           '</div>' +
@@ -10135,6 +10237,39 @@
       });
     }
 
+    // ---- テーマ色の選択（2026-10-06）----
+    // 6色を3列で並べる。会社の登録時と、会社の画面（オーナーだけ）で使う。
+    function mcThemeChipsHtml(selected, onPick) {
+      const sel = window.mcThemeId(selected);
+      return '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">' +
+        window.MC_THEME_ORDER.map((id) => {
+          const t = window.MC_THEMES[id];
+          const on = id === sel;
+          return '<button type="button" onclick="' + onPick + '(\'' + id + '\')" style="padding:0;overflow:hidden;border-radius:6px;cursor:pointer;background:#fff;' +
+              (on ? 'border:2px solid #222;box-shadow:0 0 0 1px #222;' : 'border:2px solid #ddd;') + '">' +
+            '<div style="height:18px;background:' + t.band + ';border-bottom:4px solid ' + t.accent + ';"></div>' +
+            '<div style="font-size:11px;padding:3px 0;color:#333;' + (on ? 'font-weight:bold;' : '') + '">' + (on ? '✓ ' : '') + t.name + '</div>' +
+          '</button>';
+        }).join('') +
+      '</div>';
+    }
+
+    // 登録の画面で色を選んだとき。選んだ色はその場で画面にも出す（登録前の見え方の確認用）。
+    function pickRegisterTheme(id) {
+      window._registerTheme = window.mcThemeId(id);
+      window.applyMcTheme(window._registerTheme);
+      const el = document.getElementById('registerThemeChips');
+      if (el) el.innerHTML = mcThemeChipsHtml(window._registerTheme, 'pickRegisterTheme');
+    }
+
+    // 会社の画面（オーナー）で色を選んだとき。旗に書いて、自分の画面にはすぐ出す。
+    function pickCompanyTheme(id) {
+      const el = document.getElementById('companyThemeChips');
+      window.setCompanyTheme(id).then((theme) => {
+        if (el) el.innerHTML = mcThemeChipsHtml(theme, 'pickCompanyTheme');
+      }).catch((e) => window.showAppAlert('テーマ色の切り替えに失敗しました：' + e.message));
+    }
+
     function renderCompanyModalNoCompany(body) {
       // 旗が立っていれば、登録の入口は出さない（押しても「既に登録されています」で止まるだけなので）。
       // 旗を読めなかったときは、今までどおり両方出す（登録はサーバー側でも止まる）。
@@ -10163,6 +10298,9 @@
           '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">会社を登録する</div>' +
           '<p style="font-size:11px;color:#888;margin:0 0 8px;">その日のすべての現場を管理・監視できるようになります。実行した人が会社の【管理者】になります。</p>' +
           '<input id="newCompanyNameInput" type="text" placeholder="会社名（例：○○消防設備）" style="width:100%;box-sizing:border-box;padding:8px;font-size:14px;margin-bottom:6px;">' +
+          '<div style="font-weight:bold;font-size:12px;margin:6px 0 2px;">テーマ色</div>' +
+          '<p style="font-size:11px;color:#888;margin:0 0 6px;">アプリの帯の色です。あとから会社の画面で変えられます。</p>' +
+          '<div id="registerThemeChips" style="margin-bottom:10px;">' + mcThemeChipsHtml(window._registerTheme || 'basic', 'pickRegisterTheme') + '</div>' +
           '<p style="font-size:11px;color:#888;margin:2px 0 6px;">登録すると、<a href="#" onclick="openTermsModal();return false;" style="color:#246;">利用条件</a>に同意したものとみなします。</p>' +
           '<button onclick="submitRegisterCompany()" style="width:100%;">登録する</button>' +
         '</div>' +
@@ -10174,7 +10312,10 @@
       const name = (nameInput.value || '').trim();
       if (!name) { window.showAppAlert('会社名を入力してください'); return; }
       if (!await window.showAppConfirm('「' + name + '」として会社を登録します。よろしいですか？')) return;
-      window.registerCompany(name).then(() => {
+      const theme = window.mcThemeId(window._registerTheme);
+      window.registerCompany(name, theme).then(() => {
+        window.applyMcTheme(theme);
+        window.applyMcCompanyName(name);
         window.showAppAlert('会社を登録しました。あなたはこの会社の【管理者】です。');
         refreshCompanyModal();
         refreshStartScreenCompanyStatus();
@@ -10229,6 +10370,7 @@
       if (name === status.companyName) { refreshCompanyModal(); return; }
       if (!await window.showAppConfirm('会社名を「' + name + '」に変更します。よろしいですか？')) return;
       window.renameCompany(status.companyId, name).then(() => {
+        window.applyMcCompanyName(name);
         window.showAppAlert('会社名を変更しました。').then(() => {
           refreshCompanyModal();
           if (window.refreshStartScreenCompanyStatus) refreshStartScreenCompanyStatus();
@@ -10255,6 +10397,15 @@
         html += '<div id="companyRenameSection" style="margin:0 0 12px;">' +
             '<button onclick="showCompanyRenameInput()" style="font-size:11px;padding:4px 10px;background:#f5f5f5;border:1px solid #ccc;color:#555;">会社名を変更する</button>' +
           '</div>';
+        // テーマ色（2026-10-06）。旗を書けるのはオーナーだけなので、オーナーにだけ出す。
+        // 今の色は端末に覚えている値（旗を読んだときに合わせてある）で選択状態を出す。
+        let curTheme = 'basic';
+        try { curTheme = localStorage.getItem('mc_theme') || 'basic'; } catch (e) {}
+        html += '<div style="margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:8px;">' +
+          '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">テーマ色</div>' +
+          '<p style="font-size:11px;color:#888;margin:0 0 8px;">タップすると、すぐに切り替わります。ほかの人の端末には、次にアプリを開いたときに反映されます。</p>' +
+          '<div id="companyThemeChips">' + mcThemeChipsHtml(curTheme, 'pickCompanyTheme') + '</div>' +
+        '</div>';
       }
 
       if (status.isCompanyAdmin) {
@@ -10314,7 +10465,7 @@
       // 【2026-10-05】「今開いている現場の会社紐付け」の欄はなくした（現場と会社の紐付けをやめたため）。
 
       if (status.isCompanyAdmin) {
-        html += '<button onclick="openOfficeDashboard(\'' + status.companyId + '\', \'' + (status.companyName || '').replace(/'/g, "\\'") + '\')" style="width:100%;margin-top:6px;background:#ff8c42;color:#fff;border:none;">🏢 稼働中の現場を見る</button>';
+        html += '<button onclick="openOfficeDashboard(\'' + status.companyId + '\', \'' + (status.companyName || '').replace(/'/g, "\\'") + '\')" style="width:100%;margin-top:6px;background:var(--mc-accent);color:#fff;border:none;">🏢 稼働中の現場を見る</button>';
       }
 
       // 利用条件への同意の記録。「同意しましたよね？」を相手の画面で確かめられるように、全員に出す。
@@ -10835,7 +10986,7 @@
         const label = b.name ? b.name : ('号棟' + (i + 1));
         html += '<button onclick="runSelectedPrint(' + i + ')" style="width:100%;">' + label + '</button>';
       });
-      html += '<button onclick="runSelectedPrint(\'all\')" style="width:100%;font-weight:bold;background:#fff3e0;border-color:#ff8c42;color:#ff8c42;">全号棟まとめて</button>';
+      html += '<button onclick="runSelectedPrint(\'all\')" style="width:100%;font-weight:bold;background:rgba(var(--mc-accent-rgb),0.18);border-color:var(--mc-accent);color:#1a1a1a;">全号棟まとめて</button>';
       box.innerHTML = html;
       document.getElementById('printSelectModal').classList.add('active');
     }
@@ -11518,7 +11669,7 @@ ${bodyHtml}
       document.getElementById('photoZipButtons').innerHTML = buttons || '';
     }
     const PZ_BTN_GREY = 'background:#f5f5f5;border:1px solid #ccc;color:#555;';
-    const PZ_BTN_MAIN = 'background:#ff8c42;color:#fff;border-color:#ff8c42;font-weight:bold;';
+    const PZ_BTN_MAIN = 'background:var(--mc-accent);color:#fff;border-color:var(--mc-accent);font-weight:bold;';
 
     function openPhotoZip() {
       if (!window.isJobOwner) { window.showAppAlert('この操作は現場を開始した人（親機）のみ行えます。'); return; }
