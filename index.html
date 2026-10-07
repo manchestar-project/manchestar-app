@@ -8,21 +8,15 @@
   <title>消防設備点検アプリ</title>
   <script>
     // ===== 最初に動かすもの（画面を描く前） =====================================
-    // 【web.app → firebaseapp.com へ移す（2026-10-06）】
+    // 【アプリのアドレスは web.app のまま（2026-10-07）】
     // Firebase Hosting は同じアプリを「〇〇〇.web.app」と「〇〇〇.firebaseapp.com」の2か所に置く。
     // ログインの窓は firebaseapp.com 側で開くため、アプリを web.app で開くと、Safari が
-    // 2つを別のサイトとして扱い、ログインの窓が自分の覚え書きを読めないことがある
-    // （「missing initial state」の警告が1回出て、2回目で通る）。
-    // アプリも firebaseapp.com で開けば同じサイトになり、この警告が出ない。設定の追加も要らない。
-    // 【注意】端末に覚えている内容（ログイン状態・続きの現場など）はアドレスごとに別。
-    // 移った先では、初回だけログインし直しになる。
-    (function () {
-      var h = location.hostname;
-      if (/\.web\.app$/.test(h)) {
-        location.replace('https://' + h.replace(/\.web\.app$/, '.firebaseapp.com') +
-          location.pathname + location.search + location.hash);
-      }
-    })();
+    // 2つを別のサイトとして扱い、1回目のログインで「missing initial state」の警告が出ることがある。
+    // Ver.2026-10-06-c では web.app を firebaseapp.com へ自動で移していたが、外した。
+    //   ・アドレス欄に「firebase」の名前が出るのを避けたい（見え方の判断）
+    //   ・Mac の Safari で確かめたところ、警告はログインのたびではなく、その端末の最初の1回だけだった
+    //     （ログアウト→ログインを3回、Safari を開き直して1回、いずれも警告なし）
+    // 警告が出たときは、もう一度「Googleでログイン」を押せば通る（セットアップ用プロンプトの9段目でも案内）。
 
     // 【テーマ色（2026-10-06）】
     // 会社ごとに、帯の色とアクセントの2色だけを変える。オーナーが会社の画面で選ぶ（旗の theme）。
@@ -662,7 +656,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-06-c';
+    const APP_BUILD = '2026-10-07-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
