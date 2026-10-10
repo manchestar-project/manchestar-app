@@ -656,7 +656,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-07-b';
+    const APP_BUILD = '2026-10-10-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -3892,7 +3892,7 @@
       <br>
       <button id="singleRoomEditBtn" onclick="prepareEdit()" style="width:100%;background:rgba(255,255,255,0.6);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-radius:6px;padding:10px;font-size:13px;cursor:pointer;margin-bottom:8px;">🔽号室を確認・編集する🔽</button>
       <div id="editArea">
-        <p style="font-size:13px;color:#2a2520;margin:8px 0 4px;">各階の号室を確認・編集してください（カンマ区切り）</p>
+        <p style="font-size:13px;color:#2a2520;margin:8px 0 4px;">各階の号室を確認・編集してください（カンマ区切り）<br>書いた順に左から並びます。部屋の無い場所は「-」と書いてください</p>
         <div id="floorEditList"></div>
         <div style="margin-top:12px;">
           <div class="mc-label-new">避難はしご設置（号室末尾）</div>
@@ -4463,8 +4463,13 @@
     let isDrawing = false;
     let canvas, ctx;
     let tableFloorData = [];
-    let tableSuffixes = [];
     let hasshigoSuffixes = new Set();
+    // 【号室の並び（Session 46）】列ごとの「標準の号室末尾」。左の列から順に並ぶ。
+    // 例：室数8・4号室カットなら [1,2,3,5,6,7,8,9]。避難はしご・設備の系統は、この列の番号で決める。
+    // 号室の番号そのものでは列を決めない（4階だけ番号がずれる物件でも、はしごが縦にそろうように）。
+    let tableColSuffixes = [];
+    // 部屋 → その部屋がある列の標準の号室末尾（設備の系統を引くため。描くたびに作り直す）
+    let roomColSuffix = {};
     let yoyakuList = [];
     // 予約一覧の並び順モード：'manual'（入力順・デフォルト）/ 'time'（時間順）。
     // 端末ごとの表示切り替え。クラウド同期せず、リロードで manual に戻る。
@@ -4491,7 +4496,7 @@
         id: 'b' + Date.now() + Math.floor(Math.random() * 1000),
         name: name || '',
         shortLabel: null, // 画面表示用の省略記号（例：「A」）。nullなら号棟名から自動で作る
-        setup: { floorCount: '3', roomCount: '6', cut4Room: false, cut4Floor: false, useSetsubiInfo: false, hasshigoInput: '', pendingFloorValues: {} },
+        setup: { floorCount: '3', roomCount: '6', cut4Room: false, cut4Floor: false, useSetsubiInfo: false, hasshigoInput: '', pendingFloorValues: {}, layoutV: 2, colSuffixes: [] },
         tableFloorData: [], tableGenerated: false, cells: {}, rooms: {}, setsubiDefaults: {}, setsubiCustom: {}
       };
     }
@@ -4673,7 +4678,7 @@
           '</div>' +
           '<button type="button" id="mb_roomEditBtn_' + i + '" onclick="toggleMultiBuildingRoomEdit(' + i + ')" style="width:100%;background:rgba(255,255,255,0.6);color:#1a1a1a;border:1px solid rgba(0,0,0,0.15);border-radius:6px;padding:8px;font-size:13px;cursor:pointer;margin-top:6px;">🔽号室を確認・編集する🔽</button>' +
           '<div id="mb_editArea_' + i + '" style="display:none;margin-top:8px;">' +
-            '<p style="font-size:12px;color:#4a4040;margin:4px 0;">各階の号室を確認・編集してください（カンマ区切り）</p>' +
+            '<p style="font-size:12px;color:#4a4040;margin:4px 0;">各階の号室を確認・編集してください（カンマ区切り）<br>書いた順に左から並びます。部屋の無い場所は「-」と書いてください</p>' +
             '<div id="mb_floorEditList_' + i + '"></div>' +
             '<div style="margin-top:8px;">' +
               '<div class="mc-label-new" style="font-size:12px;">避難はしご設置（号室末尾）</div>' +
@@ -4774,7 +4779,7 @@
           if (cut4Room && r === 4) continue;
           rooms.push(String(f * 100 + r));
         }
-        data.push({ floor: f, rooms: rooms });
+        data.push({ floor: f, rooms: rooms, slots: rooms.slice() });
       }
       return data;
     }
@@ -4833,22 +4838,24 @@
       for (let f = (cut4Floor ? floorCount + 1 : floorCount); f >= 1; f--) {
         if (cut4Floor && f === 4) continue;
         const customInput = document.getElementById('mb_floorinput_' + i + '_' + f);
-        let rooms;
+        let slots;
         if (customInput) {
-          rooms = normalizeListInput(customInput.value).split(',').map(r => r.trim()).filter(r => r !== '');
+          // 書いた順に左から並べる。「-」は空き場所
+          slots = parseFloorSlots(customInput.value);
         } else {
-          rooms = [];
+          slots = [];
           for (let r = 1; r <= (cut4Room ? roomCount + 1 : roomCount); r++) {
             if (cut4Room && r === 4) continue;
-            rooms.push(String(f * 100 + r));
+            slots.push(String(f * 100 + r));
           }
         }
-        data.push({ floor: f, rooms: rooms });
+        data.push({ floor: f, rooms: slots.filter(r => r !== ''), slots: slots });
       }
       return data;
     }
 
-    function buildCellsAndRoomsForBlock(tableFloorDataForBuilding, hasshigoInputValue) {
+    // はしごは号室の番号ではなく「列」で付ける（標準の階でその末尾がある列に、縦にそろえて付ける）
+    function buildCellsAndRoomsForBlock(tableFloorDataForBuilding, hasshigoInputValue, colSuffixes) {
       const cells = {};
       const rooms = {};
       const hasshigoSuffixesLocal = new Set();
@@ -4860,8 +4867,9 @@
         });
       }
       tableFloorDataForBuilding.forEach(fd => {
-        fd.rooms.forEach(room => {
-          const suffix = parseInt(room) % 100;
+        floorSlots(fd).forEach((room, col) => {
+          if (room === '') return;
+          const suffix = colSuffixes[col];
           const isH = hasshigoSuffixesLocal.has(suffix) && fd.floor !== 1;
           cells[room] = { state: 'mi', furyo: '', times: '[]', yoyakuTime: '', yoyakuNote: '', yoyakuDate: '' };
           rooms[room] = { label: '', hasshigo: isH ? '1' : '0' };
@@ -4895,7 +4903,7 @@
           b.setup = {
             floorCount: String(floorCount), roomCount: String(roomCount),
             cut4Room, cut4Floor, useSetsubiInfo: useSetsubiInfoForBuilding,
-            hasshigoInput: hasshigoValue, pendingFloorValues: {}
+            hasshigoInput: hasshigoValue, pendingFloorValues: {}, layoutV: 2, colSuffixes: []
           };
           newBuildings.push(b);
         }
@@ -4916,6 +4924,15 @@
 
     // 登録済みの棟情報から、まとめて全棟の立面図を作成する（一番下の生成ボタンから呼ばれる）
     async function generateAllRegisteredBuildings() {
+      // 号室の欄の書き間違い（同じ番号が2つ・数字でないもの）を、作る前に確かめる
+      for (const b of buildings) {
+        if (b.tableGenerated || b._blockIndex === undefined) continue;
+        const fc = parseInt(b.setup.floorCount) || 1;
+        const rc = parseInt(b.setup.roomCount) || 1;
+        const fdCheck = buildFloorDataForBlock(b._blockIndex, fc, rc, !!b.setup.cut4Room, !!b.setup.cut4Floor);
+        const err = checkFloorSlotsInput(fdCheck.map(fd => ({ floor: fd.floor, slots: fd.slots })));
+        if (err) { window.showAppAlert((b.name || '号棟') + '：' + err); return; }
+      }
       if (!(await window.showAppConfirm(buildings.length + '棟分の立面図をまとめて作成します。よろしいですか？'))) return;
       buildings.forEach(b => {
         if (b.tableGenerated) return; // 既に生成済みなら触らない（保険）
@@ -4927,7 +4944,14 @@
         const floorData = (blockIdx !== null)
           ? buildFloorDataForBlock(blockIdx, floorCount, roomCount, cut4Room, cut4Floor)
           : buildDefaultFloorDataForSetup(floorCount, roomCount, cut4Room, cut4Floor);
-        const { cells, rooms } = buildCellsAndRoomsForBlock(floorData, b.setup.hasshigoInput || '');
+        const colSuffixes = standardSuffixes(roomCount, cut4Room, maxSlotCount(floorData));
+        const { cells, rooms } = buildCellsAndRoomsForBlock(floorData, b.setup.hasshigoInput || '', colSuffixes);
+        b.setup.colSuffixes = colSuffixes;
+        b.setup.layoutV = 2;
+        // 設定画面に戻ったとき、号室の欄にこの並びが出るように控えておく
+        const pfv = {};
+        floorData.forEach(fd => { pfv[fd.floor] = slotsToText(fd.slots); });
+        b.setup.pendingFloorValues = pfv;
         b.tableFloorData = floorData;
         b.tableGenerated = true;
         b.cells = cells;
@@ -4995,7 +5019,9 @@
         cut4Floor: document.getElementById('cut4Floor').checked,
         useSetsubiInfo: document.getElementById('useSetsubiInfo').checked,
         hasshigoInput: document.getElementById('hasshigoInput').value,
-        pendingFloorValues: pendingFloorValues
+        pendingFloorValues: pendingFloorValues,
+        layoutV: 2,
+        colSuffixes: tableColSuffixes
       };
       b.tableFloorData = tableFloorData;
       b.tableGenerated = tableGenerated;
@@ -5029,6 +5055,8 @@
     function loadBuildingToView(idx) {
       const b = buildings[idx];
       if (!b) return;
+      migrateBuildingLayout(b);
+      tableColSuffixes = Array.isArray(b.setup.colSuffixes) ? b.setup.colSuffixes : [];
       document.getElementById('floorCount').value = b.setup.floorCount || '3';
       document.getElementById('roomCount').value = b.setup.roomCount || '6';
       document.getElementById('cut4Room').checked = !!b.setup.cut4Room;
@@ -6548,6 +6576,8 @@
         }];
         currentBuildingIdx = 0;
       }
+      // 号室の並びを今の形にそろえる（古い物件は、以前と同じ見た目のまま slots を作る）
+      buildings.forEach(migrateBuildingLayout);
 
       yoyakuList = state.yoyakuList || [];
 
@@ -6584,6 +6614,7 @@
       document.getElementById('useSetsubiInfo').checked = !!b.setup.useSetsubiInfo;
       document.getElementById('hasshigoInput').value = b.setup.hasshigoInput || '';
       pendingFloorValues = b.setup.pendingFloorValues || {};
+      tableColSuffixes = Array.isArray(b.setup.colSuffixes) ? b.setup.colSuffixes : [];
       setsubiDefaults = b.setsubiDefaults || {};
       setsubiCustom = b.setsubiCustom || {};
       yoyakuList = state.yoyakuList || [];
@@ -6623,11 +6654,15 @@
     // 保存されていた表データから立面図を再構築する（generateTable()の表構築部分に相当）
     function renderTableFromState(state) {
       tableFloorData = state.tableFloorData || [];
-      let allSuffixes = new Set();
-      for (const fd of tableFloorData) {
-        for (const room of fd.rooms) allSuffixes.add(parseInt(room) % 100);
-      }
-      tableSuffixes = Array.from(allSuffixes).sort((a, b) => a - b);
+      // 左から書いた順に並べる（slots）。列の数は、いちばん部屋の多い階に合わせる
+      const colCount = maxSlotCount(tableFloorData);
+      tableColSuffixes = colSuffixesFor(
+        tableColSuffixes,
+        parseInt(document.getElementById('roomCount').value) || 1,
+        document.getElementById('cut4Room').checked,
+        colCount
+      );
+      roomColSuffix = {};
 
       hasshigoSuffixes = new Set();
       const hv = normalizeListInput(document.getElementById('hasshigoInput').value);
@@ -6645,13 +6680,14 @@
 
       let html = '<table>';
       for (const fd of tableFloorData) {
-        let roomMap = {};
-        for (const room of fd.rooms) roomMap[parseInt(room) % 100] = room;
+        const slots = floorSlots(fd);
 
         html += '<tr>';
-        for (const suffix of tableSuffixes) {
-          if (roomMap[suffix]) {
-            const room = roomMap[suffix];
+        for (let col = 0; col < colCount; col++) {
+          const suffix = tableColSuffixes[col];
+          if (slots[col]) {
+            const room = slots[col];
+            roomColSuffix[room] = suffix;
             const rd = roomsData[room];
             const isH = rd && typeof rd.hasshigo !== 'undefined'
               ? rd.hasshigo === '1'
@@ -6666,9 +6702,9 @@
         html += '</tr>';
 
         html += '<tr>';
-        for (const suffix of tableSuffixes) {
-          if (roomMap[suffix]) {
-            const room = roomMap[suffix];
+        for (let col = 0; col < colCount; col++) {
+          if (slots[col]) {
+            const room = slots[col];
             const cd = cellsData[room];
             html += '<td class="cell" data-room="' + room + '" data-state="' + (cd ? cd.state : 'mi') + '"' +
               (cd && cd.furyo ? ' data-furyo="' + cd.furyo.replace(/"/g, '&quot;') + '"' : '') +
@@ -6726,6 +6762,108 @@
       tableGenerated = true;
       applyOwnerUI();
       applyScheduleDim();
+    }
+
+    // ===== 号室の並び（Session 46）=====
+    // 号室の欄は「左から書いた順」に並べる。部屋の無い場所は「-」。
+    // 以前は番号の下2桁で列を決めていたため、4階だけ402が無い物件などで
+    // 番号を詰めると列がずれ、避難はしごが縦にそろわなかった。
+    //
+    // 保存の形：tableFloorData の各階に slots（列ごとの部屋。空き場所は ''）を持つ。
+    // rooms は今までどおり「実在する部屋だけ」の配列（同期や予約の確認が使うため変えない）。
+    // slots の無い古い物件は、開いたときに以前と同じ見た目になるよう自動で作る（migrateBuildingLayout）。
+    const BLANK_SLOT_TOKENS = ['-', 'ー', '－', '−', '‐', '―'];
+    function parseFloorSlots(text) {
+      const s = normalizeListInput(text || '');
+      if (!s) return [];
+      const slots = s.split(',').map(v => v.trim()).filter(v => v !== '')
+        .map(v => BLANK_SLOT_TOKENS.includes(v) ? '' : v);
+      while (slots.length && slots[slots.length - 1] === '') slots.pop();
+      return slots;
+    }
+    function slotsToText(slots) {
+      return (slots || []).map(r => r === '' ? '-' : r).join(',');
+    }
+    function floorSlots(fd) {
+      return Array.isArray(fd.slots) ? fd.slots : (fd.rooms || []);
+    }
+    // 標準の階の並び（号室末尾）を n 列ぶん。室数を超える列は、同じ決まりで番号を続ける
+    function standardSuffixes(roomCount, cut4Room, n) {
+      const out = [];
+      let r = 1;
+      while (out.length < n) {
+        if (!(cut4Room && r === 4)) out.push(r);
+        r++;
+      }
+      return out;
+    }
+    // 列数 n に足りる「列ごとの号室末尾」。基本は base（保存されていた並び）を使い、足りなければ続ける
+    function colSuffixesFor(base, roomCount, cut4Room, n) {
+      const std = standardSuffixes(roomCount || 1, cut4Room, Math.max(n, roomCount || 1));
+      const out = (base && base.length) ? base.slice() : std.slice(0, Math.max(n, 0));
+      let next = out.length ? out[out.length - 1] + 1 : 1;
+      while (out.length < n) {
+        if (!(cut4Room && next === 4)) out.push(next);
+        next++;
+      }
+      return out;
+    }
+    function maxSlotCount(tfd) {
+      return (tfd || []).reduce((m, fd) => Math.max(m, floorSlots(fd).length), 0);
+    }
+    // 番号の下2桁で列を決めていた頃の並びを、列の配列に直す（見た目は以前と同じになる）
+    function legacySlotsFromLists(lists) {
+      const set = new Set();
+      lists.forEach(list => list.forEach(r => { const n = parseInt(r); if (!isNaN(n)) set.add(n % 100); }));
+      const sfx = Array.from(set).sort((a, c) => a - c);
+      const slotsList = lists.map(list => {
+        const map = {};
+        list.forEach(r => { const n = parseInt(r); if (!isNaN(n)) map[n % 100] = String(r); });
+        const slots = sfx.map(s => map[s] || '');
+        while (slots.length && slots[slots.length - 1] === '') slots.pop();
+        return slots;
+      });
+      return { sfx, slotsList };
+    }
+    // 古い物件を、今の並び方の形にそろえる（何度呼んでも同じ結果になる）
+    function migrateBuildingLayout(b) {
+      if (!b || !b.setup) return;
+      const tfd = b.tableFloorData || [];
+      if (tfd.length && !tfd.every(fd => Array.isArray(fd.slots))) {
+        const { sfx, slotsList } = legacySlotsFromLists(tfd.map(fd => (fd.rooms || []).map(String)));
+        tfd.forEach((fd, i) => { if (!Array.isArray(fd.slots)) fd.slots = slotsList[i]; });
+        if (!Array.isArray(b.setup.colSuffixes) || !b.setup.colSuffixes.length) b.setup.colSuffixes = sfx;
+      }
+      if (b.setup.layoutV === 2) return;
+      const pfv = b.setup.pendingFloorValues || {};
+      const floors = Object.keys(pfv);
+      if (floors.length) {
+        const lists = floors.map(f => normalizeListInput(pfv[f] || '').split(',').map(v => v.trim()).filter(v => v !== ''));
+        const { slotsList } = legacySlotsFromLists(lists);
+        const out = {};
+        floors.forEach((f, i) => { out[f] = slotsToText(slotsList[i]); });
+        b.setup.pendingFloorValues = out;
+      }
+      b.setup.layoutV = 2;
+    }
+
+    // 号室の欄の中身を確かめる。問題があれば文面を返す（無ければ空）
+    function checkFloorSlotsInput(floorsSlots) {
+      const seen = {};
+      for (const { floor, slots } of floorsSlots) {
+        for (const r of slots) {
+          if (r === '') continue;
+          if (!/^\d/.test(r)) {
+            return floor + '階の「' + r + '」は号室として使えません。\n号室は数字で、部屋の無い場所は「-」で書いてください。';
+          }
+          if (seen[r] !== undefined) {
+            const where = (seen[r] === floor) ? (floor + '階に') : (seen[r] + '階と' + floor + '階に');
+            return r + '号室が、' + where + '2回書かれています。\n同じ番号は1つだけにしてください。';
+          }
+          seen[r] = floor;
+        }
+      }
+      return '';
     }
 
     function prepareEdit() {
@@ -6857,6 +6995,20 @@
     async function generateTable() {
       ensureFloorInputs();
 
+      // 号室の欄の書き間違い（同じ番号が2つ・数字でないもの）を、作る前に確かめる
+      {
+        const fl = parseInt(document.getElementById('floorCount').value);
+        const c4f = document.getElementById('cut4Floor').checked;
+        const toCheck = [];
+        for (let f = (c4f ? fl + 1 : fl); f >= 1; f--) {
+          if (c4f && f === 4) continue;
+          const input = document.getElementById('floor_' + f);
+          if (input) toCheck.push({ floor: f, slots: parseFloorSlots(input.value) });
+        }
+        const err = checkFloorSlotsInput(toCheck);
+        if (err) { window.showAppAlert(err); return; }
+      }
+
       // 既存データがある状態で再生成する場合、削除される号室のデータ消失チェック
       if (tableGenerated) {
         const newRoomSet = new Set();
@@ -6958,27 +7110,32 @@
         if (cut4Floor && f === 4) continue;
         const input = document.getElementById('floor_' + f);
         if (!input) continue;
-        const rooms = normalizeListInput(input.value).split(',').map(r => r.trim()).filter(r => r !== '');
-        tableFloorData.push({ floor: f, rooms: rooms });
+        // 書いた順に左から並べる。「-」は空き場所
+        const slots = parseFloorSlots(input.value);
+        tableFloorData.push({ floor: f, rooms: slots.filter(r => r !== ''), slots: slots });
       }
-      let allSuffixes = new Set();
-      for (const fd of tableFloorData) {
-        for (const room of fd.rooms) allSuffixes.add(parseInt(room) % 100);
-      }
-      tableSuffixes = Array.from(allSuffixes).sort((a, b) => a - b);
+      // 列ごとの標準の号室末尾（室数と4号室カットから決める）。はしご・設備の系統はこれで引く
+      const colCount = maxSlotCount(tableFloorData);
+      tableColSuffixes = standardSuffixes(
+        parseInt(document.getElementById('roomCount').value) || 1,
+        document.getElementById('cut4Room').checked,
+        colCount
+      );
+      roomColSuffix = {};
 
       let html = '<table>';
       // 号棟が複数ある現場では、部屋番号の頭に号棟の記号を付ける（例：A-802）
       const roomPrefix = (buildings.length > 1) ? getBuildingShortLabel(buildings[currentBuildingIdx]) : '';
 
       for (const fd of tableFloorData) {
-        let roomMap = {};
-        for (const room of fd.rooms) roomMap[parseInt(room) % 100] = room;
+        const slots = floorSlots(fd);
 
         html += '<tr>';
-        for (const suffix of tableSuffixes) {
-          if (roomMap[suffix]) {
-            const room = roomMap[suffix];
+        for (let col = 0; col < colCount; col++) {
+          const suffix = tableColSuffixes[col];
+          if (slots[col]) {
+            const room = slots[col];
+            roomColSuffix[room] = suffix;
             const prevRoom = preservedRoomData[room];
             const isH = hasshigoSuffixes.has(suffix) && fd.floor !== 1;
             const label = prevRoom && prevRoom.label ? prevRoom.label : room;
@@ -6991,9 +7148,9 @@
         html += '</tr>';
 
         html += '<tr>';
-        for (const suffix of tableSuffixes) {
-          if (roomMap[suffix]) {
-            const room = roomMap[suffix];
+        for (let col = 0; col < colCount; col++) {
+          if (slots[col]) {
+            const room = slots[col];
             const prev = preservedCellData[room];
             html += '<td class="cell" data-room="' + room + '" data-state="' + (prev ? prev.state : 'mi') + '"' +
               (prev && prev.sign ? ' data-sign="' + prev.sign + '"' : '') +
@@ -7257,6 +7414,66 @@
       activeRoomCell = null;
     }
 
+    // 【部屋の番号そのものを変える（Session 46）】親機だけ。
+    // 号室の欄（設定画面）・立面図・予約・状態の記録を、すべて新しい番号にそろえる。
+    // マスの場所（列）は変わらないので、避難はしごもそのまま。
+    // サイン・点検中・不良（写真）の記録がある部屋は変えない（サイン画像や写真は部屋の番号で
+    // 別の場所にしまってあり、一緒に移せないため。番号の手直しは点検を始める前に行う前提）。
+    async function renumberRoom(oldRoom, newRoom) {
+      const b = buildings[currentBuildingIdx];
+      const fd = tableFloorData.find(f => (f.rooms || []).includes(oldRoom));
+      if (!b || !fd) return;
+      if (Math.floor(parseInt(newRoom, 10) / 100) !== fd.floor) {
+        window.showAppAlert(fd.floor + '階の部屋には、' + fd.floor + '階の番号（例：' + (fd.floor * 100 + 1) + '）を入れてください。');
+        return;
+      }
+      if (tableFloorData.some(f => (f.rooms || []).includes(newRoom))) {
+        window.showAppAlert(newRoom + '号室はすでにあります。\n番号をずらすときは、端の部屋から順に（例：409→410、408→409…）変えてください。');
+        return;
+      }
+      const stateCell = getLiveCell(oldRoom);
+      const st = stateCell ? (stateCell.dataset.state || 'mi') : 'mi';
+      if (st === 'nyushitsu' || st === 'tenkenchuu' || (stateCell && stateCell.dataset.furyo)) {
+        window.showAppAlert(oldRoom + '号室には、サイン・点検中・不良の記録があるため、番号を変えられません。');
+        return;
+      }
+      const curBid = b.id;
+      const isMine = (y) => y.room === oldRoom && (!y.buildingId || y.buildingId === curBid);
+      const hasRecord = (st !== 'mi') || yoyakuList.some(isMine);
+      const msg = oldRoom + '号室を、' + newRoom + '号室に変えます。' +
+        (hasRecord ? '\n入っている記録（不在・空室・予約）も、' + newRoom + '号室に移ります。' : '') +
+        '\nよろしいですか？';
+      if (!await window.showAppConfirm(msg)) return;
+
+      // 画面の最新の状態を号棟のデータへ写してから、番号を付け替える
+      snapshotCurrentBuilding();
+      fd.rooms = fd.rooms.map(r => r === oldRoom ? newRoom : r);
+      fd.slots = floorSlots(fd).map(r => r === oldRoom ? newRoom : r);
+      const move = (obj) => {
+        if (obj && Object.prototype.hasOwnProperty.call(obj, oldRoom)) {
+          obj[newRoom] = obj[oldRoom];
+          delete obj[oldRoom];
+        }
+      };
+      move(b.cells);
+      move(b.rooms);
+      if (b.rooms && b.rooms[newRoom]) b.rooms[newRoom].label = ''; // 番号で表示する
+      move(setsubiCustom);
+      yoyakuList.forEach(y => { if (isMine(y)) y.room = newRoom; });
+
+      // 設定画面の号室の欄も、同じ並びにそろえる（全部の階を今の立面図から書き直す）
+      tableFloorData.forEach(f => { pendingFloorValues[f.floor] = slotsToText(floorSlots(f)); });
+      tableFloorData.forEach(f => {
+        const inp = document.getElementById('floor_' + f.floor);
+        if (inp) inp.value = pendingFloorValues[f.floor];
+      });
+
+      renderTableFromState({ tableFloorData: tableFloorData, cells: b.cells, rooms: b.rooms });
+      if (window.applyCloudSigns) window.applyCloudSigns();
+      if (window.addLog) window.addLog('号室の番号を変更（' + oldRoom + '→' + newRoom + '）', { room: newRoom });
+      syncToCloud();
+    }
+
     async function roomMenuSelect(action) {
       if (!activeRoomCell) return;
       // 【バグ対策】メニュー表示中の再描画で参照が古くなる問題（menuSelectと同様）
@@ -7281,19 +7498,25 @@
         const floor = Math.floor(parseInt(room) / 100);
 
         // tableFloorData（現在表示中のデータ）から除外
-        const fd = tableFloorData.find(f => f.floor === floor);
-        if (fd) fd.rooms = fd.rooms.filter(r => r !== room);
-        const newRoomsStr = fd ? fd.rooms.join(',') : '';
+        // その場所は「-」（空き）にする。右の部屋が左に詰まって列がずれないように
+        const fd = tableFloorData.find(f => (f.rooms || []).includes(room)) || tableFloorData.find(f => f.floor === floor);
+        if (fd) {
+          fd.slots = floorSlots(fd).map(r => r === room ? '' : r);
+          while (fd.slots.length && fd.slots[fd.slots.length - 1] === '') fd.slots.pop();
+          fd.rooms = fd.rooms.filter(r => r !== room);
+        }
+        const newRoomsStr = fd ? slotsToText(fd.slots) : '';
+        const floorOfRoom = fd ? fd.floor : floor;
 
         // pendingFloorValuesを更新
-        pendingFloorValues[floor] = newRoomsStr;
+        pendingFloorValues[floorOfRoom] = newRoomsStr;
 
         // 設定画面（非表示中）のinput要素があれば値を同期、なければ作成
-        let floorInput = document.getElementById('floor_' + floor);
+        let floorInput = document.getElementById('floor_' + floorOfRoom);
         if (!floorInput) {
           // 設定画面の入力欄がまだ生成されていない場合はprepareEditで生成してから書き込む
           prepareEdit();
-          floorInput = document.getElementById('floor_' + floor);
+          floorInput = document.getElementById('floor_' + floorOfRoom);
         }
         if (floorInput) {
           floorInput.value = newRoomsStr;
@@ -7313,7 +7536,23 @@
         const current = cell.dataset.label || cell.dataset.room;
         const newLabel = await window.showAppPrompt('名称を入力してください', current);
         if (newLabel === null) return;
-        const trimmed = newLabel.trim();
+        let trimmed = newLabel.trim();
+        // 【数字だけなら、部屋の番号そのものを変える（Session 46）】
+        // 以前は見た目の名前だけが変わり、予約や記録は元の番号のままだったため、
+        // 402を403に書き換えると、予約の「403」が別のマスに入っていた。
+        const asNum = toHankaku(trimmed);
+        if (/^\d+$/.test(asNum)) {
+          const newRoom = String(parseInt(asNum, 10));
+          if (newRoom !== cell.dataset.room) {
+            if (!window.isJobOwner) {
+              window.showAppAlert('部屋の番号を変えられるのは、現場を開始した人（親機）だけです。\n「管理人室」のような言葉の名前なら変えられます。');
+              return;
+            }
+            await renumberRoom(cell.dataset.room, newRoom);
+            return;
+          }
+          trimmed = ''; // 元の番号と同じ → 名前を外して番号の表示に戻す
+        }
         const roomPrefix = (buildings.length > 1) ? getBuildingShortLabel(buildings[currentBuildingIdx]) : '';
         if (trimmed === '') {
           cell.dataset.label = '';
@@ -7506,7 +7745,8 @@
 
     function getSetsubiForRoom(room) {
       if (setsubiCustom[room]) return setsubiCustom[room];
-      const suffix = parseInt(room) % 100;
+      // 設備の系統は、その部屋がある「列」の標準の号室末尾で引く（番号がずれた階でも、同じ列の部屋と同じ系統）
+      const suffix = (roomColSuffix[room] !== undefined) ? roomColSuffix[room] : (parseInt(room) % 100);
       if (setsubiDefaults[suffix]) return setsubiDefaults[suffix];
       return { tei: 0, sa: 0, ke: 0, gas: 0, otherLabel: '', otherCount: 0 };
     }
@@ -11017,10 +11257,10 @@
     const RYO_PAGE = { portrait: { w: 210, h: 297 }, landscape: { w: 297, h: 210 } };
 
     function ryomenzuShape(b) {
+      // 画面の立面図と同じく、号室は左から書いた順に並べる（列の数は部屋のいちばん多い階）
+      migrateBuildingLayout(b);
       const tableFloorData = b.tableFloorData || [];
-      const set = new Set();
-      for (const fd of tableFloorData) for (const room of fd.rooms) set.add(parseInt(room) % 100);
-      return { suffixes: Array.from(set).sort((a, c) => a - c), floors: tableFloorData.length || 1 };
+      return { cols: maxSlotCount(tableFloorData), floors: tableFloorData.length || 1 };
     }
 
     // 縦が使えるか（1階の部屋を幅18mm以上で並べられるか）
@@ -11045,7 +11285,7 @@
     }
 
     function ryomenzuOrientFor(bs) {
-      return bs.every((b) => ryomenzuFitsPortrait(ryomenzuShape(b).suffixes.length || 1)) ? 'portrait' : 'landscape';
+      return bs.every((b) => ryomenzuFitsPortrait(ryomenzuShape(b).cols || 1)) ? 'portrait' : 'landscape';
     }
 
     // 号棟1つ分の立面図を、用紙ごとのテーブルHTMLの配列で返す（buildings配列の保存済みの状態から）
@@ -11053,10 +11293,9 @@
     function buildRyomenzuTableHtml(b, signs, orient) {
       const tableFloorData = b.tableFloorData || [];
       const shape = ryomenzuShape(b);
-      const tableSuffixes = shape.suffixes;
       const cellData = b.cells || {};
       const roomNumberData = b.rooms || {};
-      const colCount = tableSuffixes.length || 1;
+      const colCount = shape.cols || 1;
       const lay = ryomenzuLayout(colCount, shape.floors, orient || 'portrait');
       const w = lay.w.toFixed(2);
       const hNum = (lay.w * RYO_NUM).toFixed(2);
@@ -11079,14 +11318,13 @@
       for (let start = 0; start < tableFloorData.length; start += lay.rowsPerPage) {
         let tableHtml = '<table style="width:' + (lay.w * colCount).toFixed(2) + 'mm;">';
         for (const fd of tableFloorData.slice(start, start + lay.rowsPerPage)) {
-          let roomMap = {};
-          for (const room of fd.rooms) roomMap[parseInt(room) % 100] = room;
+          const slots = floorSlots(fd);
 
           tableHtml += '<tr>';
-          for (const suffix of tableSuffixes) {
-            if (roomMap[suffix]) {
-              const rn = roomNumberData[roomMap[suffix]] || { label: roomMap[suffix] };
-              tableHtml += '<td class="room-number" style="' + tdNum + '">' + (rn.label || roomMap[suffix]) + '</td>';
+          for (let col = 0; col < colCount; col++) {
+            if (slots[col]) {
+              const rn = roomNumberData[slots[col]] || { label: slots[col] };
+              tableHtml += '<td class="room-number" style="' + tdNum + '">' + (rn.label || slots[col]) + '</td>';
             } else {
               tableHtml += '<td class="empty-number" style="' + tdNum + '"></td>';
             }
@@ -11094,9 +11332,9 @@
           tableHtml += '</tr>';
 
           tableHtml += '<tr>';
-          for (const suffix of tableSuffixes) {
-            if (!roomMap[suffix]) { tableHtml += '<td class="empty-state" style="' + tdCell + '"></td>'; continue; }
-            const room = roomMap[suffix];
+          for (let col = 0; col < colCount; col++) {
+            if (!slots[col]) { tableHtml += '<td class="empty-state" style="' + tdCell + '"></td>'; continue; }
+            const room = slots[col];
             const d = cellData[room] || { state: 'mi', furyo: '', yoyakuTime: '' };
             const sign = (signs && signs[room]) || '';
             let cls = 'cell';
