@@ -656,7 +656,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-10-a';
+    const APP_BUILD = '2026-10-11-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -2397,6 +2397,18 @@
               }, { merge: true }).then(() => null);
             }
 
+            // 【オーナーの管理者の印が外れていたら付け直す（Session 47）】
+            // 以前はメンバー一覧の自分の行にも「管理者を外す」が出ていて、オーナーが自分の印を
+            // 外せてしまった。外れると会社の画面のメンバー欄が出なくなり、自分では戻せなかった。
+            // サーバーの決まりごとではオーナーは印が無くても管理者扱いなので、記録が欠けたときと
+            // 同じく、ここで本人が自分で直す（オーナーは自分の記録を書ける）。
+            if (isOwner && member.status === 'approved' && !member.isCompanyAdmin) {
+              member.isCompanyAdmin = true;
+              updateDoc(doc(db, 'companies', d.companyId, 'members', window.currentUser.uid), {
+                isCompanyAdmin: true
+              }).catch((e) => dlog('オーナーの管理者の印の付け直しに失敗 / ' + e.message));
+            }
+
             // 控えが会社側とズレていたら、ついでに直しておく（自分の記録なので自分で書ける）。
             if (d.companyStatus !== member.status) {
               setDoc(doc(db, 'users', window.currentUser.uid), {
@@ -2499,6 +2511,9 @@
       return getDoc(doc(db, 'companies', companyId)).then((snap) => {
         if (!snap.exists() || snap.data().ownerUid !== window.currentUser.uid) {
           throw new Error('管理者の設定は会社の登録者のみ行えます。');
+        }
+        if (snap.data().ownerUid === uid && !isCompanyAdmin) {
+          throw new Error('登録者（オーナー）は管理者を外せません。');
         }
         return updateDoc(doc(db, 'companies', companyId, 'members', uid), { isCompanyAdmin: !!isCompanyAdmin });
       });
@@ -10947,7 +10962,8 @@
             html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;">' +
               '<span style="font-size:13px;">' + (m.displayName || '（名前未設定）') + (m.isCompanyAdmin ? ' <span style="color:#ff8c42;font-size:11px;">【管理者】</span>' : '') + '</span>';
             // 管理者フラグの変更と除名は登録者（オーナー）のみ。他の人にはボタンを出さない。
-            if (isOwner) {
+            // オーナー自身の行には出さない（自分の管理者を外す・自分を除名すると、会社の画面で戻せなくなるため）
+            if (isOwner && m.uid !== window.currentUser.uid) {
               html += '<span>' +
               '<button onclick="toggleCompanyAdminUI(\'' + companyId + '\',\'' + m.uid + '\',' + (!m.isCompanyAdmin) + ')" style="padding:4px 8px;font-size:12px;">' +
                 (m.isCompanyAdmin ? '管理者を外す' : '管理者にする') +
