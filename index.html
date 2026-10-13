@@ -656,7 +656,7 @@
     // ===== ビルド識別 =====
     // 「直したはずなのに変わらない」場合に、古いファイルが読まれているのか
     // 処理が通っていないのかを切り分けるための印。修正するたびに更新する。
-    const APP_BUILD = '2026-10-11-a';
+    const APP_BUILD = '2026-10-13-a';
     window.APP_BUILD = APP_BUILD;
 
     // ===== アプリが意図した再読み込み =====
@@ -3604,7 +3604,10 @@
       }
     }
   </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- 【2026-10-13】改ざん防止の印（SRI）を付けた。配信元のファイルが書き換えられた場合、ブラウザが読み込みを拒む。
+       値は cdnjs が公開しているものと同じ（作者の元のファイル qrcode.min.js から計算して一致を確認）。
+       版を変えるときは、この値も新しい版のものに替えること（替えないと QR が出なくなる）。 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha512-CNgIRecGo7nphbeZ04Sc13ka07paqdeTu0WR1IM4kNcpmBAUSHSQX0FslNhTDadL4O5SAGapGt4FodqL8My0mA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 <body>
 
@@ -5610,15 +5613,23 @@
         ? window.crypto.randomUUID()
         : ('job_' + Date.now() + '_' + Math.random().toString(36).slice(2));
       localStorage.setItem('mc_job_id', window.currentJobId);
-      if (window.setJobOwnerIfNew) window.setJobOwnerIfNew(window.currentJobId);
+      const ownerReady = window.setJobOwnerIfNew ? window.setJobOwnerIfNew(window.currentJobId) : Promise.resolve();
       window.ownerCheckDone = true;
       window.isJobOwner = true;
       window.myRole = 'admin';
-      if (window.registerPresence) window.registerPresence();
-      if (window.startPresenceWatch) window.startPresenceWatch();
-      if (window.startMemoWatch) window.startMemoWatch();
-      if (window.startInstructionWatch) window.startInstructionWatch();
-      if (window.startSignWatch) { window.signWatchDone = true; window.startSignWatch(); }
+      // 【2026-10-13】在席の登録と見張りは、現場の持ち主を書き終えてから始める。
+      // ルールが「まだ無い現場の下には書けない・読めない」になったため、先に始めると拒まれる。
+      // 見張り（onSnapshot）は一度拒まれると止まったままになり、ほかの人の印やサインが出なくなる。
+      // setJobOwnerIfNew の Promise は失敗しても成功側で終わるので、ここが永久に止まることはない。
+      const jobAtStart = window.currentJobId;
+      ownerReady.then(() => {
+        if (window.currentJobId !== jobAtStart) return; // 待っている間に別の現場へ移った
+        if (window.registerPresence) window.registerPresence();
+        if (window.startPresenceWatch) window.startPresenceWatch();
+        if (window.startMemoWatch) window.startMemoWatch();
+        if (window.startInstructionWatch) window.startInstructionWatch();
+        if (window.startSignWatch) { window.signWatchDone = true; window.startSignWatch(); }
+      });
       if (window.applyOwnerUI) window.applyOwnerUI();
       buildNoteSelects();
       buildTimeSelects();
@@ -5891,8 +5902,10 @@
         ? window.crypto.randomUUID()
         : ('job_' + Date.now() + '_' + Math.random().toString(36).slice(2));
       localStorage.setItem('mc_job_id', window.currentJobId);
-      if (window.setJobOwnerIfNew) window.setJobOwnerIfNew(window.currentJobId);
-      window.appReload();
+      // 【2026-10-13】持ち主を書き終えてから開き直す。待たずに開き直すと書き込みが途中で切れ、
+      // 自分の現場なのに子機扱いで開いたり、在席の登録がルールに拒まれたりする。
+      const ownerReady = window.setJobOwnerIfNew ? window.setJobOwnerIfNew(window.currentJobId) : Promise.resolve();
+      ownerReady.then(() => window.appReload());
     }
 
     function buildTimeSelects() {
