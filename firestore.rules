@@ -9,6 +9,8 @@ rules_version = '2';
 // 2026-09-23：写真の使用量の積算（config/usage）と、オーナーによる数え直しを追加
 // 2026-09-23（Session 38）：古いサイン・写真の掃除のため、旗の会社のオーナーに
 //   現場の一覧（会社の一致に依らない）と、サイン・写真・覚え書きの「読む・消す」を許可
+// 2026-10-13：見直し。まだ無い現場の下へは書けないようにした（canEnterExistingJob）。
+//   写真の使用量の積算は、作るときもオーナー以外は上限付きにした。
 // 2026-10-05：現場と会社の「紐付け」をやめた。1つの Firebase に会社は1社なので、
 //   ここの現場はすべて旗の会社のもの。会社の管理者・メンバーの判定は、現場に書かれた
 //   companyId ではなく、旗（config/system）が指している会社で行う。
@@ -42,6 +44,15 @@ rules_version = '2';
 //     config/system に会社ID が載るため、ログインした人なら誰でも会社ID を知り得る。
 //     ただし申請してもオーナーの承認が要るため、実害は「承認待ちに知らない名前が並ぶ」程度。
 //     塞ぐには会社名を inviteCodes 側へ持たせる改造が要るため、別途とした。
+//   ・現場の中の役（管理者・サブ・作業員）は、サーバーでは確かめていない（2026-10-13 確認）。
+//     在席（presence）の role は、その現場に入れる人なら誰でも書き換えられる。
+//     ただし点検の記録はもともと現場の全員が書ける作りで、本当に守るべき骨組み
+//     （持ち主・開いている期限・終了の合図・現場の削除）は jobCoreUnchanged と
+//     canManageJob で守っているため、実害は小さい。役ごとにサーバーで操作を止めたくなったら、
+//     role の書き換えを canManageJob の人に限るなど、作り直しが要る。
+//   ・回数の制限は無い（2026-10-13 確認）。config/usage は1回あたりの増減を絞っているが、
+//     何度も繰り返せば上限まで押し上げられる。ルールだけでは防げない。
+//     必要になったら Firebase App Check の導入を考える。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -159,6 +170,18 @@ service cloud.firestore {
         || isFlagCompanyAdmin();
     }
 
+    // 現場の下（サイン・写真・在席など）に入ってよい人かどうか（2026-10-13 追加）。
+    // canEnterJob と違い、現場がまだ無いときは通さない。
+    // 【理由】canEnterJob は新しい現場を作るために「まだ無い現場」を通している。
+    // これを下の段でも使うと、でたらめな現場ID の下に、ログインした人なら誰でも
+    // 写真や覚え書きを好きなだけ書けてしまう（容量を食われる・使用量の数え直しが水増しされる）。
+    // 【アプリ側の約束】新しい現場では、持ち主の書き込み（setJobOwnerIfNew）が終わってから
+    // 在席の登録や見張りを始めること（index.html の startNewProperty を参照）。
+    function canEnterExistingJob(jobId) {
+      return jobExists(jobId)
+        && (isJobOwner(jobId) || jobIsOpen(jobId) || isFlagCompanyAdmin());
+    }
+
     // 現場の「骨組み」。ここを書き換えられるのは持ち主と会社の管理者だけ。
     //   ownerUid / ownerEmail … 持ち主のすげ替えを防ぐ
     //   companyId             … 別の会社への付け替えを防ぐ
@@ -228,13 +251,14 @@ service cloud.firestore {
     // 【写真共有モードについて】写真は inspections/{jobId}/photos に置く設計。
     // この包括の段で通るため、写真用の行を別に足す必要は無い。
     // （例外：オーナーの掃除のための「読む・消す」は、すぐ下の段で別に許している）
+    // 【2026-10-13】判定を canEnterJob から canEnterExistingJob に変えた（まだ無い現場の下には書けない）。
     match /inspections/{jobId}/{document=**} {
-      allow read, write: if signedIn() && canEnterJob(jobId);
+      allow read, write: if signedIn() && canEnterExistingJob(jobId);
     }
 
     // 古いサイン・写真の掃除のための通り道（2026-09-23 Session 38）。
     // 当時は、旗の会社のオーナーでも紐付いていない他人の現場には入れず、上の段では通らなかった。
-    // 2026-10-05 に紐付けをやめてからは、オーナーは上の段（canEnterJob）でも通る。
+    // 2026-10-05 に紐付けをやめてからは、オーナーは上の段（今は canEnterExistingJob）でも通る。
     // ここは同じ範囲を重ねて許しているだけなので、動きは変わらない。念のため残している。
     // 掃除に要る「読む・消す」だけを、この3か所に限って許す（書き込み・作成は許さない）。
     // 読む：サインと覚え書きの一覧、覚え書きの無い本体の件数と一覧。
@@ -481,10 +505,15 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list: if false;
 
+      // 【2026-10-13】作るときも、オーナー以外は 2,000,000 までにした。
+      // 以前は上限が無く、まだ積算が無い Firebase では、ログインした人なら誰でも巨大な値で
+      // 作れた（その時点で「9割」の判定が働き、全端末で写真の保存が止まる）。
+      // アプリは写真1枚ぶんを足すときに merge で書くので、1件目はこの create を通る。
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['photoBytes', 'updatedAt'])
         && request.resource.data.photoBytes is number
-        && request.resource.data.photoBytes >= 0;
+        && request.resource.data.photoBytes >= 0
+        && (isFlagCompanyOwner() || request.resource.data.photoBytes <= 2000000);
 
       allow update: if signedIn()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoBytes', 'updatedAt'])
